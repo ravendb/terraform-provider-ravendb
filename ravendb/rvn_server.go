@@ -23,15 +23,20 @@ import (
 	"strings"
 	"sync"
 	"time"
-	//test_operations "ravendb/ravendb/operations"
 )
 
-const numberOfIterationsToDial int = 20
-const numberOfIterationsToTryAndGetTopology int = 5
-const numberOfIterationsExecuteWithRetries int = 3
+const (
+	numberOfIterationsToTryAndGetTopology int = 5
+	numberOfIterationsExecuteWithRetries  int = 3
+	DEFAULT_SECURE_RAVENDB_HTTP_PORT      int = 443
+	DEFAULT_INSECURE_RAVENDB_HTTP_PORT    int = 8080
+	DEFAULT_SECURE_RAVENDB_TCP_PORT       int = 38888
+	DEFAULT_INSECURE_RAVENDB_TCP_PORT     int = 38881
+	DEFAULT_RAVENDB_HTTP_PORT             int = 80
+)
 
 type ServerConfig struct {
-	Version             string
+	Package             Package
 	Hosts               []string
 	License             []byte
 	Settings            map[string]interface{}
@@ -52,7 +57,12 @@ type NodeState struct {
 	TcpUrl             string
 	Files              map[string][]byte
 	Insecure           bool
-	Version            int
+	Version            string
+}
+
+type Package struct {
+	Version string
+	Arch    string
 }
 
 type Url struct {
@@ -117,14 +127,14 @@ func upload(con *ssh.Client, buf bytes.Buffer, path string, content []byte) erro
 
 func (sc *ServerConfig) deployRavenDbInstances(parallel bool) error {
 	var wg sync.WaitGroup
-	errorsChanel := make(chan error, len(sc.Hosts))
+	errorsChannel := make(chan error, len(sc.Hosts))
 
 	for index, publicIp := range sc.Hosts {
 		wg.Add(1)
 		deployAction := func(copyOfPublicIp string, copyOfIndex int) {
 			err := sc.deployServer(copyOfPublicIp, copyOfIndex)
 			if err != nil {
-				errorsChanel <- err
+				errorsChannel <- err
 			}
 			wg.Done()
 		}
@@ -136,11 +146,11 @@ func (sc *ServerConfig) deployRavenDbInstances(parallel bool) error {
 	}
 
 	wg.Wait()
-	close(errorsChanel)
+	close(errorsChannel)
 
 	var result error
 
-	for err := range errorsChanel {
+	for err := range errorsChannel {
 		result = multierror.Append(result, err)
 	}
 	return result
@@ -173,6 +183,7 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 		User:            sc.SSH.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         1 * time.Minute,
 	}
 	conn, err := ssh.Dial("tcp", net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort())), authConfig)
 	if err != nil {
@@ -202,11 +213,15 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 	if file, ok := ns.Files["settings.json"]; ok {
 		err = json.Unmarshal(file, &ns.Settings)
 		if err != nil {
-			stdoutBuf.WriteString("Failed to url JSON\n")
+			stdoutBuf.WriteString("Failed to parse settings.json\n")
 			stdoutBuf.Write(file)
 			return ns, err
 		}
 		delete(ns.Files, "settings.json")
+	}
+	//workaround to convert unmarshalled map[string]interface{} values to string.
+	for key := range ns.Settings {
+		ns.Settings[key] = fmt.Sprintf("%v", ns.Settings[key])
 	}
 
 	if license, ok := ns.Files["license.json"]; ok {
@@ -228,13 +243,13 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 		return ns, err
 	}
 
-	ns.Version = buildNumber.BuildVersion
+	ns.Version = strconv.Itoa(buildNumber.BuildVersion)
 
 	ns.Host = publicIP
 	ns.TcpUrl = ns.Settings["PublicServerUrl"].(string)
 	ns.HttpUrl = ns.Settings["PublicServerUrl.Tcp"].(string)
 	if unsecuredAccessAllowed, ok := ns.Settings["Security.UnsecuredAccessAllowed"]; ok {
-		ns.Insecure = unsecuredAccessAllowed.(string) == "PublicNetwork"
+		ns.Insecure = unsecuredAccessAllowed == "PublicNetwork"
 	}
 
 	delete(ns.Settings, "PublicServerUrl")
@@ -250,7 +265,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	defer func() {
 		log.Println(stdoutBuf.String())
 	}()
-	ravenPackageUrl := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + sc.Version + "-0_amd64.deb"
+	ravenPackageUrl := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + sc.Package.Version + sc.Package.Arch
 
 	signer, err := ssh.ParsePrivateKey(sc.SSH.Pem)
 	if err != nil {
@@ -260,38 +275,21 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		User:            sc.SSH.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         time.Minute * 10,
+		Timeout:         1 * time.Minute,
 	}
-	for i := 0; i < numberOfIterationsToDial; i++ {
-		conn, err = ssh.Dial("tcp", net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort())), authConfig)
-		if err == nil {
-			break
-		} else {
-			if i != numberOfIterationsToDial {
-				time.Sleep(time.Second * 5)
-			} else {
-				return err
-			}
-		}
+	conn, err = ssh.Dial("tcp", net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort())), authConfig)
+	if err != nil {
+		return err
 	}
-
 	defer conn.Close()
-	for i := 0; i < numberOfIterationsToDial; i++ {
-		err = sc.execute(publicIP, []string{
-			"n=0; while [ \"$n\" -lt 10 ] && [ ! -f /var/lib/cloud/instance/boot-finished ]; do echo 'Waiting for cloud-init...'; n=$(( n + 1 )); sleep 1; done",
-			"wget -nv -O ravendb.deb " + ravenPackageUrl,
-			"sudo apt-get update -y",
-			"sudo apt-get install -y -f ./ravendb.deb",
-		}, stdoutBuf, conn)
-		if err == nil {
-			break
-		} else {
-			if i != numberOfIterationsToDial {
-				time.Sleep(time.Second)
-			} else {
-				return err
-			}
-		}
+	err = sc.execute(publicIP, []string{
+		"n=0; while [ \"$n\" -lt 10 ] && [ ! -f /var/lib/cloud/instance/boot-finished ]; do echo 'Waiting for cloud-init...'; n=$(( n + 1 )); sleep 1; done",
+		"wget -nv -O ravendb.deb " + ravenPackageUrl,
+		"sudo apt-get update -y",
+		"sudo apt-get install -y -f ./ravendb.deb",
+	}, "", stdoutBuf, conn)
+	if err != nil {
+		return err
 	}
 
 	err = upload(conn, stdoutBuf, "/etc/ravendb/license.json", sc.License)
@@ -307,7 +305,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	var settings map[string]interface{}
 	err = json.Unmarshal(contents, &settings)
 	if err != nil {
-		stdoutBuf.WriteString("Failed to parse JSON\n")
+		stdoutBuf.WriteString("Failed to ravendb settings.json\n")
 		stdoutBuf.Write(contents)
 		return err
 	}
@@ -349,10 +347,10 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		return err
 	}
 	err = sc.execute(publicIP, []string{
-		"sudo chown -R ravendb:ravendb /etc/ravendb/",
+		"sudo chown root:ravendb /etc/ravendb/license.json",
 		"sudo systemctl restart ravendb",
 		"curl -v --retry-connrefused --retry 100 --retry-delay 1 " + httpUrl + "/setup/alive",
-	}, stdoutBuf, conn)
+	}, "sudo systemctl status ravendb", stdoutBuf, conn)
 	if err != nil {
 		return err
 	}
@@ -361,7 +359,6 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 }
 
 func (sc *ServerConfig) setupUrls(index int, scheme string, settings map[string]interface{}) (string, error) {
-
 	httpUrl, tcpUrl, err := sc.GetUrlByIndex(index, scheme)
 	if err != nil {
 		return "", err
@@ -372,16 +369,15 @@ func (sc *ServerConfig) setupUrls(index int, scheme string, settings map[string]
 }
 
 func (sc *ServerConfig) GetUrlByIndex(index int, scheme string) (string, string, error) {
-
 	if sc.Url.HttpPort == 0 {
 		if sc.Insecure == false {
-			sc.Url.HttpPort = 443
+			sc.Url.HttpPort = DEFAULT_SECURE_RAVENDB_HTTP_PORT
 		} else {
-			sc.Url.HttpPort = 8080
+			sc.Url.HttpPort = DEFAULT_INSECURE_RAVENDB_HTTP_PORT
 		}
 	}
 	if sc.Url.TcpPort == 0 {
-		sc.Url.TcpPort = 38880
+		sc.Url.TcpPort = DEFAULT_SECURE_RAVENDB_TCP_PORT
 	}
 
 	u, err := url.Parse(sc.Url.List[index])
@@ -402,7 +398,7 @@ func (sc *ServerConfig) GetUrlByIndex(index int, scheme string) (string, string,
 }
 
 func (sc *ServerConfig) maybeAddHttpPortToHost(host string) string {
-	if sc.Insecure == true && sc.Url.HttpPort != 80 || sc.Insecure == false && sc.Url.HttpPort != 443 {
+	if sc.Insecure == true && sc.Url.HttpPort != DEFAULT_RAVENDB_HTTP_PORT || sc.Insecure == false && sc.Url.HttpPort != DEFAULT_SECURE_RAVENDB_HTTP_PORT {
 		host += ":" + strconv.Itoa(sc.Url.HttpPort)
 	}
 	return host
@@ -410,23 +406,21 @@ func (sc *ServerConfig) maybeAddHttpPortToHost(host string) string {
 
 type debugWriter struct {
 	mu        sync.Mutex
-	publicIp  string
 	stdoutBuf bytes.Buffer
 }
 
 func (w *debugWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	log.Println(w.publicIp + " > " + string(p))
 	w.stdoutBuf.Write(p)
 	return len(p), nil
 }
 
-func (sc *ServerConfig) execute(publicIp string, commands []string, stdoutBuf bytes.Buffer, conn *ssh.Client) error {
+func (sc *ServerConfig) execute(publicIp string, commands []string, onErr string, stdoutBuf bytes.Buffer, conn *ssh.Client) error {
 	writer := debugWriter{
-		publicIp:  publicIp,
 		stdoutBuf: stdoutBuf,
 	}
+	stdoutBuf.WriteString(publicIp)
 	for _, cmd := range commands {
 		cmdStr := "$ " + cmd + "\n"
 		stdoutBuf.WriteString(cmdStr)
@@ -440,18 +434,25 @@ func (sc *ServerConfig) execute(publicIp string, commands []string, stdoutBuf by
 		session.Stderr = &writer
 
 		err = session.Run(cmd)
-		session.Close()
 		if err != nil {
+			log.Println(err)
+			if onErr != "" {
+				session.Run(cmd) // executed to write to the log
+			}
+			session.Close()
+
 			return &DeployError{
 				Err:    err,
 				Output: stdoutBuf.String(),
 			}
 		}
+		session.Close()
 	}
 	return nil
 }
 
 func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
+	var databaseDoesNotExistError *ravendb.DatabaseDoesNotExistError
 	store, err := getStore(sc, 0)
 	if err != nil {
 		return "", err
@@ -472,17 +473,22 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 		return "", err
 	}
 
-	err = sc.createDb(store)
-	if err != nil {
+	err = sc.getDatabaseHealthCheck(store)
+	if errors.As(err, &databaseDoesNotExistError) {
+		err = sc.createDb(store)
+		if err != nil {
+			return "", err
+		}
+	} else if err != nil {
 		return "", err
 	}
 
-	return clusterTopology.Topology.TopologyId, nil
+	return clusterTopology.Topology.TopologyID, nil
 }
 
-func (sc *ServerConfig) getSetupAlive(node string, store *ravendb.DocumentStore) error {
-	setupAlive := operations.OperationSetupAlive{}
-	err := store.Maintenance().Server().Send(&setupAlive) //TODO: Use the node here, missing ForNode() method
+func (sc *ServerConfig) getDatabaseHealthCheck(store *ravendb.DocumentStore) error {
+	databaseHealthCheck := operations.OperationDatabaseHealthCheck{}
+	err := executeWithRetriesMaintenanceOperations(store, &databaseHealthCheck)
 	if err != nil {
 		return err
 	}
@@ -516,7 +522,7 @@ func getStore(config *ServerConfig, index int) (*ravendb.DocumentStore, error) {
 		return nil, err
 	}
 
-	store := ravendb.NewDocumentStore(serverNode, "")
+	store := ravendb.NewDocumentStore(serverNode, config.HealthcheckDatabase)
 	if err != nil {
 		return nil, err
 	}
@@ -536,7 +542,6 @@ func getStore(config *ServerConfig, index int) (*ravendb.DocumentStore, error) {
 }
 
 func (sc *ServerConfig) addNodesToCluster(store *ravendb.DocumentStore) error {
-
 	clusterTopology, err := sc.getClusterTopology(store)
 	var errAllDown *ravendb.AllTopologyNodesDownError
 	if errors.As(err, &errAllDown) {
@@ -604,7 +609,7 @@ func (sc *ServerConfig) purgeRavenDbInstance(publicIP string) error {
 
 	err = sc.execute(publicIP, []string{
 		"sudo apt-get -y purge ravendb",
-	}, stdoutBuf, conn)
+	}, "", stdoutBuf, conn)
 
 	if err != nil {
 		stdoutBuf.WriteString("Failed to delete ravendb instance. Host machine ip: " + publicIP + "\n")

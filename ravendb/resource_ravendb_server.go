@@ -3,20 +3,29 @@ package ravendb
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 )
 
 const (
-	errorCreate = "error while creating information: %s"
-	errorRead   = "error getting raven configuration information: %s"
-	errorDelete = "error deleting RavenDbInstances: %s"
+	errorCreate = "error while creating RavenDB instances: %s"
+	errorRead   = "error getting RavenDB configuration information: %s"
+	errorDelete = "error deleting RavenDB instances: %s"
 )
+
+var packageArchitectures = map[string]string{
+	"arm64": "_linux-arm64",
+	"arm32": "-0_armhf.deb",
+	"amd64": "-0_amd64.deb",
+}
 
 func resourceRavendbServer() *schema.Resource {
 	return &schema.Resource{
@@ -36,15 +45,15 @@ func resourceRavendbServer() *schema.Resource {
 				},
 				MinItems: 1,
 			},
-			"healthcheck_database": {
+			"database": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				Description: "The database name to check whether he is alive or not.",
 			},
 			"certificate_base64": {
-				Type:         schema.TypeString,
-				Optional:     true,
-				Description:  "The cluster certificate file that is used by RavenDB for server side authentication.",
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "The cluster certificate file that is used by RavenDB for server side authentication.",
 			},
 			"license": {
 				Type:         schema.TypeString,
@@ -52,26 +61,23 @@ func resourceRavendbServer() *schema.Resource {
 				Description:  "The license that will be used for the setup of the RavenDB cluster.",
 				ValidateFunc: validation.StringIsBase64,
 			},
-			"version": {
-				Type:        schema.TypeString,
-				Required:    true,
-				Description: "The RavenDB version to use for the cluster.",
-				ValidateFunc: func(val interface{}, key string) (warns []string, errs []error) {
-					v, ok := val.(string)
-					if !ok {
-						errs = append(errs, fmt.Errorf("expected type of %q to be string", v))
-						return warns, errs
-					}
-					link := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + v + "-0_amd64.deb"
-					response, err := http.Head(link)
-					if err != nil {
-						errs = append(errs, fmt.Errorf("unable to download the RavenDB version: %s, from: %s because of: %s", v, link, err.Error()))
-						return warns, errs
-					} else if response.StatusCode != http.StatusOK {
-						errs = append(errs, fmt.Errorf("'%s' is not reachable. HTTP status code: %d. Please check the input version: %s. Url used was: %s", link, response.StatusCode, v, link))
-						return warns, errs
-					}
-					return warns, errs
+			"package": {
+				Type:     schema.TypeSet,
+				Required: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"version": {
+							Type:        schema.TypeString,
+							Required:    true,
+							Description: "The RavenDB version to use for the cluster.",
+						},
+						"arch": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: "Operating system architecture name - amd64, arm64, arm32",
+						},
+					},
 				},
 			},
 			"insecure": {
@@ -107,7 +113,7 @@ func resourceRavendbServer() *schema.Resource {
 					},
 				},
 			},
-			"settings": {
+			"additional_settings": {
 				Type:     schema.TypeMap,
 				Optional: true,
 				Elem: &schema.Schema{
@@ -132,7 +138,7 @@ func resourceRavendbServer() *schema.Resource {
 							Type:     schema.TypeString,
 							Required: true,
 						},
-						"pem_base64": {
+						"pem": {
 							Type:         schema.TypeString,
 							Required:     true,
 							ValidateFunc: validation.StringIsBase64,
@@ -219,7 +225,7 @@ func resourceServerDelete(ctx context.Context, d *schema.ResourceData, meta inte
 	return sc.RemoveRavenDbInstances()
 }
 
-func convertNode(node NodeState) interface{} {
+func convertNode(node NodeState) map[string]interface{} {
 	return map[string]interface{}{
 		"host":               node.Host,
 		"license":            base64.StdEncoding.EncodeToString(node.Licence),
@@ -246,7 +252,7 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		sc.Hosts[i] = host.(string)
 	}
 
-	if dbName, ok := d.GetOk("healthcheck_database"); ok {
+	if dbName, ok := d.GetOk("database"); ok {
 		sc.HealthcheckDatabase = dbName.(string)
 	}
 
@@ -264,11 +270,16 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 	}
 	sc.License = license
 
-	version := d.Get("version").(string)
-	if err != nil {
-		return sc, err
+	packageSet := d.Get("package").(*schema.Set).List()
+	for _, v := range packageSet {
+		value := v.(map[string]interface{})
+		sc.Package.Version = value["version"].(string)
+		sc.Package.Arch = value["arch"].(string)
+		err := validatePackage(&sc)
+		if err != nil {
+			return sc, err
+		}
 	}
-	sc.Version = version
 
 	files := d.Get("files").(map[string]interface{})
 	sc.Files = map[string][]byte{}
@@ -279,7 +290,7 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		}
 		sc.Files[name] = value
 	}
-	settings := d.Get("settings").(map[string]interface{})
+	settings := d.Get("additional_settings").(map[string]interface{})
 	sc.Settings = make(map[string]interface{})
 	for k, v := range settings {
 		sc.Settings[k] = v.(string)
@@ -289,7 +300,7 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 	for _, v := range sshSet {
 		value := v.(map[string]interface{})
 		sc.SSH.User = value["user"].(string)
-		pemBase64 := value["pem_base64"].(string)
+		pemBase64 := value["pem"].(string)
 		pem, err := base64.StdEncoding.DecodeString(pemBase64)
 		if err != nil {
 			return sc, err
@@ -305,30 +316,49 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		for i, url := range list {
 			sc.Url.List[i] = url.(string)
 		}
-		if http, ok := value["http_port"]; ok {
-			sc.Url.HttpPort = http.(int)
+		if http_port, ok := value["http_port"]; ok {
+			sc.Url.HttpPort = http_port.(int)
 		} else {
-			sc.Url.HttpPort = 443
+			sc.Url.HttpPort = DEFAULT_SECURE_RAVENDB_HTTP_PORT
 			if sc.Insecure {
-				sc.Url.HttpPort = 8080
+				sc.Url.HttpPort = DEFAULT_INSECURE_RAVENDB_HTTP_PORT
 			}
 		}
 
 		if tcp, ok := value["tcp_port"]; ok {
 			sc.Url.TcpPort = tcp.(int)
 		} else {
-			sc.Url.TcpPort = 38880
+			sc.Url.TcpPort = DEFAULT_SECURE_RAVENDB_TCP_PORT
 			if sc.Insecure {
-				sc.Url.TcpPort = 38881
+				sc.Url.TcpPort = DEFAULT_INSECURE_RAVENDB_TCP_PORT
 			}
 		}
 	}
 
-	if sc.ClusterCertificate != nil && sc.Insecure == true{
-		return sc, fmt.Errorf("expected insecure to be false. certificate should be added only on secure mode")
+	if sc.ClusterCertificate != nil && sc.Insecure == false {
+		return sc, fmt.Errorf("expected insecure to be ture. certificate should be added when using secure mode")
 	}
 
 	return sc, nil
+}
+
+func validatePackage(sc *ServerConfig) error {
+	for key, value := range packageArchitectures {
+		if key == strings.ToLower(sc.Package.Arch) {
+			sc.Package.Arch = value
+		}
+	}
+	if len(strings.TrimSpace(sc.Package.Arch)) == 0 {
+		sc.Package.Arch = "-0_amd64.deb"
+	}
+	link := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + sc.Package.Version + sc.Package.Arch
+	response, err := http.Head(link)
+	if err != nil {
+		return errors.New("unable to download the RavenDB version: " + sc.Package.Version + ", from: " + link + " because of:" + "err")
+	} else if response.StatusCode != http.StatusOK {
+		return errors.New(link + " is not reachable. HTTP status code: " + strconv.Itoa(response.StatusCode) + ". Please check the input version:" + sc.Package.Version + ". Url used was:" + link)
+	}
+	return nil
 }
 
 func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
@@ -345,7 +375,11 @@ func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta interf
 	for i, node := range nodes {
 		convertedNodes[i] = convertNode(node)
 	}
-	d.Set("nodes", convertedNodes)
+
+	err = d.Set("nodes", convertedNodes)
+	if err != nil {
+		return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
+	}
 
 	return nil
 }
