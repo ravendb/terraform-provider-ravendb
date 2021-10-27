@@ -17,7 +17,7 @@ import (
 
 const (
 	errorCreate = "error while creating RavenDB instances: %s"
-	errorRead   = "error getting RavenDB configuration information: %s"
+	errorRead   = "error reading RavenDB configuration information: %s"
 	errorDelete = "error deleting RavenDB instances: %s"
 )
 
@@ -50,10 +50,11 @@ func resourceRavendbServer() *schema.Resource {
 				Optional:    true,
 				Description: "The database name to check whether he is alive or not.",
 			},
-			"certificate_base64": {
+			"certificate": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				Description: "The cluster certificate file that is used by RavenDB for server side authentication.",
+				ValidateFunc: validation.StringIsBase64,
 			},
 			"license": {
 				Type:         schema.TypeString,
@@ -171,7 +172,7 @@ func resourceRavendbServer() *schema.Resource {
 								Type: schema.TypeString,
 							},
 						},
-						"certificate_base64": {
+						"certificate": {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
@@ -191,6 +192,10 @@ func resourceRavendbServer() *schema.Resource {
 							},
 						},
 						"insecure": {
+							Type:     schema.TypeBool,
+							Computed: true,
+						},
+						"failed": {
 							Type:     schema.TypeBool,
 							Computed: true,
 						},
@@ -221,7 +226,6 @@ func resourceServerDelete(ctx context.Context, d *schema.ResourceData, meta inte
 	if err != nil {
 		return diag.FromErr(fmt.Errorf(errorDelete, err.Error()))
 	}
-
 	return sc.RemoveRavenDbInstances()
 }
 
@@ -230,12 +234,13 @@ func convertNode(node NodeState) map[string]interface{} {
 		"host":               node.Host,
 		"license":            base64.StdEncoding.EncodeToString(node.Licence),
 		"settings":           node.Settings,
-		"certificate_base64": base64.StdEncoding.EncodeToString(node.ClusterCertificate),
+		"certificate": base64.StdEncoding.EncodeToString(node.ClusterCertificate),
 		"http_url":           node.HttpUrl,
 		"tcp_url":            node.TcpUrl,
 		"files":              node.Files,
 		"insecure":           node.Insecure,
 		"version":            node.Version,
+		"failed":             node.Failed,
 	}
 }
 
@@ -256,7 +261,7 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		sc.HealthcheckDatabase = dbName.(string)
 	}
 
-	certBas64 := d.Get("certificate_base64").(string)
+	certBas64 := d.Get("certificate").(string)
 	cert, err := base64.StdEncoding.DecodeString(certBas64)
 	if err != nil {
 		return sc, err
@@ -316,8 +321,8 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		for i, url := range list {
 			sc.Url.List[i] = url.(string)
 		}
-		if http_port, ok := value["http_port"]; ok {
-			sc.Url.HttpPort = http_port.(int)
+		if httpPort, ok := value["http_port"]; ok {
+			sc.Url.HttpPort = httpPort.(int)
 		} else {
 			sc.Url.HttpPort = DEFAULT_SECURE_RAVENDB_HTTP_PORT
 			if sc.Insecure {
@@ -325,8 +330,8 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 			}
 		}
 
-		if tcp, ok := value["tcp_port"]; ok {
-			sc.Url.TcpPort = tcp.(int)
+		if tcpPort, ok := value["tcp_port"]; ok {
+			sc.Url.TcpPort = tcpPort.(int)
 		} else {
 			sc.Url.TcpPort = DEFAULT_SECURE_RAVENDB_TCP_PORT
 			if sc.Insecure {
@@ -335,7 +340,7 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		}
 	}
 
-	if sc.ClusterCertificate != nil && sc.Insecure == false {
+	if sc.ClusterCertificate != nil && sc.Insecure == true {
 		return sc, fmt.Errorf("expected insecure to be ture. certificate should be added when using secure mode")
 	}
 
@@ -343,10 +348,9 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 }
 
 func validatePackage(sc *ServerConfig) error {
-	for key, value := range packageArchitectures {
-		if key == strings.ToLower(sc.Package.Arch) {
-			sc.Package.Arch = value
-		}
+	arc := strings.ToLower(sc.Package.Arch)
+	if val, ok := packageArchitectures[arc]; ok {
+		sc.Package.Arch = val
 	}
 	if len(strings.TrimSpace(sc.Package.Arch)) == 0 {
 		sc.Package.Arch = "-0_amd64.deb"
@@ -366,14 +370,17 @@ func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta interf
 	if err != nil {
 		return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
 	}
+
 	nodes, err := readRavenDbInstances(sc)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
 	}
-	convertedNodes := make([]interface{}, len(nodes))
 
-	for i, node := range nodes {
-		convertedNodes[i] = convertNode(node)
+	convertedNodes := make([]interface{}, len(nodes))
+	for index, node := range nodes {
+		if node.Failed == false {
+			convertedNodes[index] = convertNode(node)
+		}
 	}
 
 	err = d.Set("nodes", convertedNodes)
@@ -388,17 +395,24 @@ func readRavenDbInstances(sc ServerConfig) ([]NodeState, error) {
 	var wg sync.WaitGroup
 	var errResults error
 	errorsChanel := make(chan error, len(sc.Hosts))
-	nodeStateArray := make([]NodeState, len(sc.Hosts))
+
+	var nodeStateArray []NodeState
 
 	for index, publicIp := range sc.Hosts {
 		wg.Add(1)
 		go func(copyOfPublicIp string, copyOfIndex int) {
 			nodeState, err := sc.ReadServer(copyOfPublicIp, copyOfIndex)
 			if err != nil {
-				errorsChanel <- err
+				if strings.Contains(err.Error(), "Unable to SSH to") {
+					nodeState.Failed = true
+					wg.Done()
+					return
+				} else {
+					errorsChanel <- err
+				}
 			}
 			wg.Done()
-			nodeStateArray[copyOfIndex] = nodeState
+			nodeStateArray = append(nodeStateArray, nodeState)
 		}(publicIp, index)
 	}
 
@@ -411,6 +425,7 @@ func readRavenDbInstances(sc ServerConfig) ([]NodeState, error) {
 		}
 		return nil, errResults
 	}
+
 	return nodeStateArray, nil
 }
 

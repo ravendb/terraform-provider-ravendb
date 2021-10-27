@@ -1,8 +1,8 @@
 package utils
 
-// #cgo linux windows pkg-config: libssl libcrypto
-// #cgo linux CFLAGS: -Wno-deprecated-declarations
-// #cgo windows CFLAGS: -DWIN32_LEAN_AND_MEAN
+//#cgo windows CFLAGS: "-IC:/Program Files/OpenSSL-Win64/include"
+//#cgo windows LDFLAGS: "-LC:/Program Files/OpenSSL-Win64/lib" -llibcrypto
+//#cgo linux CFLAGS: -Wno-deprecated-declarations
 // #include "pfx.h"
 import "C"
 

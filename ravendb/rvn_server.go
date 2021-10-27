@@ -27,12 +27,12 @@ import (
 
 const (
 	numberOfIterationsToTryAndGetTopology int = 5
-	numberOfIterationsExecuteWithRetries  int = 3
+	numberOfIterationsExecuteWithRetries  int = 5
 	DEFAULT_SECURE_RAVENDB_HTTP_PORT      int = 443
 	DEFAULT_INSECURE_RAVENDB_HTTP_PORT    int = 8080
 	DEFAULT_SECURE_RAVENDB_TCP_PORT       int = 38888
 	DEFAULT_INSECURE_RAVENDB_TCP_PORT     int = 38881
-	DEFAULT_RAVENDB_HTTP_PORT             int = 80
+	DEFAULT_HTTP_PORT                     int = 80
 )
 
 type ServerConfig struct {
@@ -58,6 +58,7 @@ type NodeState struct {
 	Files              map[string][]byte
 	Insecure           bool
 	Version            string
+	Failed             bool
 }
 
 type Package struct {
@@ -173,6 +174,10 @@ func listFiles(conn *ssh.Client, dir string) ([]string, error) {
 func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error) {
 	var stdoutBuf bytes.Buffer
 	var ns NodeState
+	var conn *ssh.Client
+	defer func() {
+		log.Println(stdoutBuf.String())
+	}()
 
 	signer, err := ssh.ParsePrivateKey(sc.SSH.Pem)
 	if err != nil {
@@ -183,11 +188,19 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 		User:            sc.SSH.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         1 * time.Minute,
+		Timeout:         time.Second * 10,
 	}
-	conn, err := ssh.Dial("tcp", net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort())), authConfig)
-	if err != nil {
-		return ns, err
+
+	hostAndPort := net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort()))
+	for i := 0; i <= numberOfIterationsExecuteWithRetries; i++ {
+		conn, err = ssh.Dial("tcp", hostAndPort, authConfig)
+		if err != nil && i < numberOfIterationsExecuteWithRetries {
+			time.Sleep(time.Second * 2)
+		} else if err == nil {
+			break
+		} else {
+			return ns, errors.New("Unable to SSH to " + hostAndPort + " because " + err.Error())
+		}
 	}
 	defer conn.Close()
 
@@ -277,17 +290,24 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         1 * time.Minute,
 	}
-	conn, err = ssh.Dial("tcp", net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort())), authConfig)
-	if err != nil {
-		return err
+	hostAndPort := net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort()))
+	for i := 0; i <= numberOfIterationsExecuteWithRetries; i++ {
+		conn, err = ssh.Dial("tcp", hostAndPort, authConfig)
+		if err != nil && i < numberOfIterationsExecuteWithRetries {
+			time.Sleep(time.Second * 2)
+		} else if err == nil {
+			break
+		} else {
+			return errors.New("Unable to SSH to " + hostAndPort + " because " + err.Error())
+		}
 	}
 	defer conn.Close()
 	err = sc.execute(publicIP, []string{
 		"n=0; while [ \"$n\" -lt 10 ] && [ ! -f /var/lib/cloud/instance/boot-finished ]; do echo 'Waiting for cloud-init...'; n=$(( n + 1 )); sleep 1; done",
 		"wget -nv -O ravendb.deb " + ravenPackageUrl,
-		"sudo apt-get update -y",
+		"while ! sudo apt-get update -y; do sleep 1; done", //sometimes 'sudo apt get-update' fails.
 		"sudo apt-get install -y -f ./ravendb.deb",
-	}, "", stdoutBuf, conn)
+	}, "", &stdoutBuf, conn)
 	if err != nil {
 		return err
 	}
@@ -316,6 +336,14 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		if err != nil {
 			return err
 		}
+
+		err = sc.execute(publicIP, []string{
+			"sudo chown ravendb:ravendb /etc/ravendb/certificate.pfx",
+		}, "sudo systemctl status ravendb", &stdoutBuf, conn)
+		if err != nil {
+			return err
+		}
+
 	}
 
 	scheme := "https"
@@ -347,10 +375,11 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		return err
 	}
 	err = sc.execute(publicIP, []string{
-		"sudo chown root:ravendb /etc/ravendb/license.json",
+		"sudo chown ravendb:ravendb /etc/ravendb/license.json",
 		"sudo systemctl restart ravendb",
-		"curl -v --retry-connrefused --retry 100 --retry-delay 1 " + httpUrl + "/setup/alive",
-	}, "sudo systemctl status ravendb", stdoutBuf, conn)
+		"timeout 100 bash -c -- 'while ! curl  -v " + httpUrl + "/setup/alive; do sleep 1; done'",
+		//"curl -v --retry-connrefused --retry 100 --retry-delay 1 " + httpUrl + "/setup/alive",
+	}, "sudo systemctl status ravendb", &stdoutBuf, conn)
 	if err != nil {
 		return err
 	}
@@ -398,7 +427,7 @@ func (sc *ServerConfig) GetUrlByIndex(index int, scheme string) (string, string,
 }
 
 func (sc *ServerConfig) maybeAddHttpPortToHost(host string) string {
-	if sc.Insecure == true && sc.Url.HttpPort != DEFAULT_RAVENDB_HTTP_PORT || sc.Insecure == false && sc.Url.HttpPort != DEFAULT_SECURE_RAVENDB_HTTP_PORT {
+	if sc.Insecure == true && sc.Url.HttpPort != DEFAULT_HTTP_PORT || sc.Insecure == false && sc.Url.HttpPort != DEFAULT_SECURE_RAVENDB_HTTP_PORT {
 		host += ":" + strconv.Itoa(sc.Url.HttpPort)
 	}
 	return host
@@ -406,7 +435,7 @@ func (sc *ServerConfig) maybeAddHttpPortToHost(host string) string {
 
 type debugWriter struct {
 	mu        sync.Mutex
-	stdoutBuf bytes.Buffer
+	stdoutBuf *bytes.Buffer
 }
 
 func (w *debugWriter) Write(p []byte) (int, error) {
@@ -416,7 +445,7 @@ func (w *debugWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (sc *ServerConfig) execute(publicIp string, commands []string, onErr string, stdoutBuf bytes.Buffer, conn *ssh.Client) error {
+func (sc *ServerConfig) execute(publicIp string, commands []string, onErr string, stdoutBuf *bytes.Buffer, conn *ssh.Client) error {
 	writer := debugWriter{
 		stdoutBuf: stdoutBuf,
 	}
@@ -556,6 +585,7 @@ func (sc *ServerConfig) addNodesToCluster(store *ravendb.DocumentStore) error {
 	}
 
 	for _, nodeUrl := range clusterTopology.Topology.AllNodes {
+		var nodTag string
 		if contains(sc.Url.List, nodeUrl) {
 			continue
 		} else {
@@ -563,15 +593,31 @@ func (sc *ServerConfig) addNodesToCluster(store *ravendb.DocumentStore) error {
 			if err != nil {
 				return err
 			}
-			hostName := strings.Split(parse.Host, ".")
-			tag := strings.ToUpper(hostName[0])
-			err = executeWithRetries(store, &operations.RemoveClusterNode{
-				Node: nodeUrl,
-				Tag:  tag,
-			})
-			if err != nil {
-				return err
+			if sc.Insecure == false {
+				hostName := strings.Split(parse.Host, ".")
+				tag := strings.ToUpper(hostName[0])
+				err = executeWithRetries(store, &operations.RemoveClusterNode{
+					Node: nodeUrl,
+					Tag:  tag,
+				})
+				if err != nil {
+					return err
+				}
+			} else {
+				for key, val := range clusterTopology.Topology.Members {
+					if val == nodeUrl {
+						nodTag = key
+					}
+				}
+				err = executeWithRetries(store, &operations.RemoveClusterNode{
+					Node: nodeUrl,
+					Tag:  nodTag,
+				})
+				if err != nil {
+					return err
+				}
 			}
+
 		}
 	}
 
@@ -609,7 +655,7 @@ func (sc *ServerConfig) purgeRavenDbInstance(publicIP string) error {
 
 	err = sc.execute(publicIP, []string{
 		"sudo apt-get -y purge ravendb",
-	}, "", stdoutBuf, conn)
+	}, "", &stdoutBuf, conn)
 
 	if err != nil {
 		stdoutBuf.WriteString("Failed to delete ravendb instance. Host machine ip: " + publicIP + "\n")
@@ -719,7 +765,8 @@ func executeWithRetries(store *ravendb.DocumentStore, operation ravendb.IServerO
 		if err == nil {
 			return nil
 		}
-		if !errors.As(err, &errNoLeader) {
+
+		if !errors.As(err, &errNoLeader) && !errors.As(err, &errNoLeader) {
 			return err
 		}
 		// we may need to wait a bit because adding a node to the cluster may move things around
@@ -748,7 +795,7 @@ func readFileContents(path string, stdoutBuf bytes.Buffer, conn *ssh.Client) ([]
 
 func contains(s []string, str string) bool {
 	for _, v := range s {
-		if v == str {
+		if strings.ToLower(v) == str {
 			return true
 		}
 	}
