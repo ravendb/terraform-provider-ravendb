@@ -2,7 +2,6 @@ module ravendb
 
 go 1.16
 
-replace github.com/ravendb/terraform-provider-ravendb => C:\Work\terraform-provider-ravendb
 
 require (
 	github.com/gruntwork-io/terratest v0.38.1

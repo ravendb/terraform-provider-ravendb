@@ -42,7 +42,7 @@ type ServerConfig struct {
 	Settings            map[string]interface{}
 	ClusterCertificate  []byte
 	Url                 Url
-	Files               map[string][]byte
+	Assets              map[string][]byte
 	Insecure            bool
 	SSH                 SSH
 	HealthcheckDatabase string
@@ -55,7 +55,7 @@ type NodeState struct {
 	ClusterCertificate []byte
 	HttpUrl            string
 	TcpUrl             string
-	Files              map[string][]byte
+	Assets             map[string][]byte
 	Insecure           bool
 	Version            string
 	Failed             bool
@@ -95,6 +95,7 @@ func (e *DeployError) Error() string {
 }
 
 func upload(con *ssh.Client, buf bytes.Buffer, path string, content []byte) error {
+	//https://chuacw.ath.cx/development/b/chuacw/archive/2019/02/04/how-the-scp-protocol-works.aspx
 	session, err := con.NewSession()
 	if err != nil {
 		return err
@@ -102,7 +103,12 @@ func upload(con *ssh.Client, buf bytes.Buffer, path string, content []byte) erro
 	defer session.Close()
 
 	buf.WriteString("sudo scp -t " + path + "\n")
-
+	if err != nil {
+		return &DeployError{
+			Err:    err,
+			Output: buf.String(),
+		}
+	}
 	stdin, err := session.StdinPipe()
 	if err != nil {
 		return err
@@ -208,7 +214,7 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 	if err != nil {
 		return ns, err
 	}
-	ns.Files = make(map[string][]byte)
+	ns.Assets = make(map[string][]byte)
 	for _, file := range files {
 		_, fileName := filepath.Split(file)
 
@@ -219,31 +225,32 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 		if contents == nil {
 			contents = make([]byte, 0) // empty file
 		}
-		ns.Files[fileName] = contents
+		ns.Assets[fileName] = contents
 	}
 
 	ns.Settings = make(map[string]interface{})
-	if file, ok := ns.Files["settings.json"]; ok {
+	if file, ok := ns.Assets["settings.json"]; ok {
 		err = json.Unmarshal(file, &ns.Settings)
 		if err != nil {
 			stdoutBuf.WriteString("Failed to parse settings.json\n")
 			stdoutBuf.Write(file)
 			return ns, err
 		}
-		delete(ns.Files, "settings.json")
+		delete(ns.Assets, "settings.json")
 	}
 	//workaround to convert unmarshalled map[string]interface{} values to string.
 	for key := range ns.Settings {
 		ns.Settings[key] = fmt.Sprintf("%v", ns.Settings[key])
 	}
 
-	if license, ok := ns.Files["license.json"]; ok {
+	if license, ok := ns.Assets["license.json"]; ok {
 		ns.Licence = license
-		delete(ns.Files, "license.json")
+		delete(ns.Assets, "license.json")
 	}
-	if cert, ok := ns.Files["certificate.pfx"]; ok {
+
+	if cert, ok := ns.Assets["certificate.pfx"]; ok {
 		ns.ClusterCertificate = cert
-		delete(ns.Files, "certificate.pfx")
+		delete(ns.Assets, "certificate.pfx")
 	}
 
 	store, err := getStore(sc, index)
@@ -330,6 +337,14 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		return err
 	}
 
+	////stub
+	//for path, content := range sc.Assets {
+	//	err = upload(conn, stdoutBuf, path, content)
+	//	if err != nil {
+	//		return err
+	//	}
+	//}
+
 	if sc.ClusterCertificate != nil && sc.Insecure == false {
 		settings["Security.Certificate.Path"] = "/etc/ravendb/certificate.pfx"
 		err = upload(conn, stdoutBuf, "/etc/ravendb/certificate.pfx", sc.ClusterCertificate)
@@ -378,7 +393,6 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		"sudo chown ravendb:ravendb /etc/ravendb/license.json",
 		"sudo systemctl restart ravendb",
 		"timeout 100 bash -c -- 'while ! curl  -v " + httpUrl + "/setup/alive; do sleep 1; done'",
-		//"curl -v --retry-connrefused --retry 100 --retry-delay 1 " + httpUrl + "/setup/alive",
 	}, "sudo systemctl status ravendb", &stdoutBuf, conn)
 	if err != nil {
 		return err
@@ -539,30 +553,28 @@ func getStore(config *ServerConfig, index int) (*ravendb.DocumentStore, error) {
 	host = config.Url.List[index]
 
 	serverNode := []string{host}
-
-	key, crt, err := utils.PfxToPem(config.ClusterCertificate)
-
-	if err != nil {
-		return nil, err
-	}
-
-	cert, err := tls.X509KeyPair(crt, key)
-	if err != nil {
-		return nil, err
-	}
-
 	store := ravendb.NewDocumentStore(serverNode, config.HealthcheckDatabase)
-	if err != nil {
-		return nil, err
+
+	if config.Insecure == false {
+		key, crt, err := utils.PfxToPem(config.ClusterCertificate)
+
+		if err != nil {
+			return nil, err
+		}
+
+		cert, err := tls.X509KeyPair(crt, key)
+		if err != nil {
+			return nil, err
+		}
+
+		x509cert, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return nil, err
+		}
+		store.TrustStore = x509cert
+		store.Certificate = &cert
 	}
 
-	store.Certificate = &cert
-
-	x509cert, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		return nil, err
-	}
-	store.TrustStore = x509cert
 	if err := store.Initialize(); err != nil {
 		return nil, err
 	}

@@ -51,9 +51,9 @@ func resourceRavendbServer() *schema.Resource {
 				Description: "The database name to check whether he is alive or not.",
 			},
 			"certificate": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				Description: "The cluster certificate file that is used by RavenDB for server side authentication.",
+				Type:         schema.TypeString,
+				Optional:     true,
+				Description:  "The cluster certificate file that is used by RavenDB for server side authentication.",
 				ValidateFunc: validation.StringIsBase64,
 			},
 			"license": {
@@ -114,14 +114,14 @@ func resourceRavendbServer() *schema.Resource {
 					},
 				},
 			},
-			"additional_settings": {
+			"settings_override": {
 				Type:     schema.TypeMap,
 				Optional: true,
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},
 			},
-			"files": {
+			"assets": {
 				Type:     schema.TypeMap,
 				Optional: true,
 				Elem: &schema.Schema{
@@ -184,7 +184,7 @@ func resourceRavendbServer() *schema.Resource {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
-						"files": {
+						"assets": {
 							Type:     schema.TypeMap,
 							Computed: true,
 							Elem: &schema.Schema{
@@ -231,16 +231,16 @@ func resourceServerDelete(ctx context.Context, d *schema.ResourceData, meta inte
 
 func convertNode(node NodeState) map[string]interface{} {
 	return map[string]interface{}{
-		"host":               node.Host,
-		"license":            base64.StdEncoding.EncodeToString(node.Licence),
-		"settings":           node.Settings,
+		"host":        node.Host,
+		"license":     base64.StdEncoding.EncodeToString(node.Licence),
+		"settings":    node.Settings,
 		"certificate": base64.StdEncoding.EncodeToString(node.ClusterCertificate),
-		"http_url":           node.HttpUrl,
-		"tcp_url":            node.TcpUrl,
-		"files":              node.Files,
-		"insecure":           node.Insecure,
-		"version":            node.Version,
-		"failed":             node.Failed,
+		"http_url":    node.HttpUrl,
+		"tcp_url":     node.TcpUrl,
+		"assets":      node.Assets,
+		"insecure":    node.Insecure,
+		"version":     node.Version,
+		"failed":      node.Failed,
 	}
 }
 
@@ -266,7 +266,9 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 	if err != nil {
 		return sc, err
 	}
-	sc.ClusterCertificate = cert
+	if allZero(cert) == false {
+		sc.ClusterCertificate = cert
+	}
 
 	licenseBas64 := d.Get("license").(string)
 	license, err := base64.StdEncoding.DecodeString(licenseBas64)
@@ -286,16 +288,16 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		}
 	}
 
-	files := d.Get("files").(map[string]interface{})
-	sc.Files = map[string][]byte{}
-	for name, base64Val := range files {
+	assets := d.Get("assets").(map[string]interface{})
+	sc.Assets = map[string][]byte{}
+	for name, base64Val := range assets {
 		value, err := base64.StdEncoding.DecodeString(base64Val.(string))
 		if err != nil {
 			return sc, err
 		}
-		sc.Files[name] = value
+		sc.Assets[name] = value
 	}
-	settings := d.Get("additional_settings").(map[string]interface{})
+	settings := d.Get("settings_override").(map[string]interface{})
 	sc.Settings = make(map[string]interface{})
 	for k, v := range settings {
 		sc.Settings[k] = v.(string)
@@ -346,7 +348,14 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 
 	return sc, nil
 }
-
+func allZero(s []byte) bool {
+	for _, v := range s {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
 func validatePackage(sc *ServerConfig) error {
 	arc := strings.ToLower(sc.Package.Arch)
 	if val, ok := packageArchitectures[arc]; ok {
