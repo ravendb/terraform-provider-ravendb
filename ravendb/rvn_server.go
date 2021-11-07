@@ -135,7 +135,7 @@ func upload(con *ssh.Client, buf bytes.Buffer, path string, content []byte) erro
 	output, err = session.CombinedOutput("sudo chown ravendb:ravendb " + path)
 	buf.Write(output)
 	if err != nil {
-		return errors.New("Failed to ownership: " + path + err.Error() + "\n")
+		return errors.New("Failed to ownership: " + path + "\n"+ err.Error() + "\n")
 	}
 
 	return nil
