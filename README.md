@@ -84,6 +84,9 @@ resource "ravendb_server" "server" {
   settings_override = {
    "Indexing.MapBatchSize": 16384
   }
+  assets = {
+   "/path/to/file/file_name.extension" = filebase64("/path/to/file_name.extension")
+  }
   ssh {
     user = "ubuntu"
     pem  = filebase64("/path/to/server.pem")
@@ -102,14 +105,15 @@ output "database_name" {
 ## Inputs
 | Name | Description | Type  | Required |
 |------|-------------|------|--------:|
-| hosts | The hostnames (or ip addresses) of the nodes that terraform will use to setup the RavenDB cluster. | `list` | yes
+| hosts | The ip addresses of the nodes that terraform will use to setup the RavenDB cluster. | `list` | yes
 | database - `optional` | The database name to check whether he is alive or not. It will create the given database if it doesn't exists | `string` | no |
 | certificate - `optional` | The cluster certificate file that is used by RavenDB for server side authentication. | `filebase64` | no 
-| license | The license that will be used for the setup of the RavenDB cluster. | `filebase64` |yes 
+| license | The license file that will be used for the setup of the RavenDB cluster. | `filebase64` |yes 
 | package<ul><li>version</li><li>arch - `optional`</li>| Object that represents the version and the OS RavenDB will be running on. Supported architectures are: amd64, arm64 and arm32 | `set`<ul><li>`string`</li><li>`string`</li> | yes |
 | insecure | Whatever to allow to run RavenDB in unsecured mode. This is ***NOT*** recommended! | `bool` | no |
-| settings_override | overriding the settings.json | `map[string][string]`| no |
-| url<ul><li>list</li><li>http_url - `optional`</li><li>tcp_url - `optional`</li></ul>| object that represents the nodes | `set`<ul><li>`List(string)`</li><li>`int`</li> </li><li>`int`</li>  | yes |
+| settings_override | overriding the settings.json. | `map[string][string]`| no |
+| assets | Upload files given an absolute path. | `map[string][string]`| no |
+| url<ul><li>list</li><li>http_url - `optional`</li><li>tcp_url - `optional`</li></ul>| object that represents the nodes. | `set`<ul><li>`List(string)`</li><li>`int`</li> </li><li>`int`</li>  | yes |
 
 ## Debug mode
 In order to be able to see debug log you need to define `environment variables`.
