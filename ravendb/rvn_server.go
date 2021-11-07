@@ -26,13 +26,12 @@ import (
 )
 
 const (
-	numberOfIterationsToTryAndGetTopology int = 5
-	numberOfIterationsExecuteWithRetries  int = 5
-	DEFAULT_SECURE_RAVENDB_HTTP_PORT      int = 443
-	DEFAULT_INSECURE_RAVENDB_HTTP_PORT    int = 8080
-	DEFAULT_SECURE_RAVENDB_TCP_PORT       int = 38888
-	DEFAULT_INSECURE_RAVENDB_TCP_PORT     int = 38881
-	DEFAULT_HTTP_PORT                     int = 80
+	NUMBER_OF_RETRIES                  int = 5
+	DEFAULT_SECURE_RAVENDB_HTTP_PORT   int = 443
+	DEFAULT_INSECURE_RAVENDB_HTTP_PORT int = 8080
+	DEFAULT_SECURE_RAVENDB_TCP_PORT    int = 38888
+	DEFAULT_INSECURE_RAVENDB_TCP_PORT  int = 38881
+	DEFAULT_HTTP_PORT                  int = 80
 )
 
 type ServerConfig struct {
@@ -96,19 +95,13 @@ func (e *DeployError) Error() string {
 
 func upload(con *ssh.Client, buf bytes.Buffer, path string, content []byte) error {
 	//https://chuacw.ath.cx/development/b/chuacw/archive/2019/02/04/how-the-scp-protocol-works.aspx
-	session, err := con.NewSession()
+ 	session, err := con.NewSession()
 	if err != nil {
 		return err
 	}
-	defer session.Close()
 
 	buf.WriteString("sudo scp -t " + path + "\n")
-	if err != nil {
-		return &DeployError{
-			Err:    err,
-			Output: buf.String(),
-		}
-	}
+
 	stdin, err := session.StdinPipe()
 	if err != nil {
 		return err
@@ -127,6 +120,22 @@ func upload(con *ssh.Client, buf bytes.Buffer, path string, content []byte) erro
 			Err:    err,
 			Output: buf.String(),
 		}
+	}
+
+	session.Close()
+
+	session, err = con.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	buf.WriteString("sudo chown ravendb:ravendb " + path + "\n")
+
+	output, err = session.CombinedOutput("sudo chown ravendb:ravendb " + path)
+	buf.Write(output)
+	if err != nil {
+		return errors.New("Failed to ownership: " + path + "\n"+ err.Error() + "\n")
 	}
 
 	return nil
@@ -178,6 +187,7 @@ func listFiles(conn *ssh.Client, dir string) ([]string, error) {
 }
 
 func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error) {
+
 	var stdoutBuf bytes.Buffer
 	var ns NodeState
 	var conn *ssh.Client
@@ -197,19 +207,12 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 		Timeout:         time.Second * 10,
 	}
 
-	hostAndPort := net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort()))
-	for i := 0; i <= numberOfIterationsExecuteWithRetries; i++ {
-		conn, err = ssh.Dial("tcp", hostAndPort, authConfig)
-		if err != nil && i < numberOfIterationsExecuteWithRetries {
-			time.Sleep(time.Second * 2)
-		} else if err == nil {
-			break
-		} else {
-			return ns, errors.New("Unable to SSH to " + hostAndPort + " because " + err.Error())
-		}
+	conn, err = sc.ConnectToRemoteWithRetry(publicIP, conn, authConfig)
+	if err != nil {
+		return ns, err
 	}
-	defer conn.Close()
 
+	defer conn.Close()
 	files, err := listFiles(conn, "/etc/ravendb")
 	if err != nil {
 		return ns, err
@@ -297,22 +300,15 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         1 * time.Minute,
 	}
-	hostAndPort := net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort()))
-	for i := 0; i <= numberOfIterationsExecuteWithRetries; i++ {
-		conn, err = ssh.Dial("tcp", hostAndPort, authConfig)
-		if err != nil && i < numberOfIterationsExecuteWithRetries {
-			time.Sleep(time.Second * 2)
-		} else if err == nil {
-			break
-		} else {
-			return errors.New("Unable to SSH to " + hostAndPort + " because " + err.Error())
-		}
+	conn, err = sc.ConnectToRemoteWithRetry(publicIP, conn, authConfig)
+	if err != nil {
+		return err
 	}
 	defer conn.Close()
 	err = sc.execute(publicIP, []string{
 		"n=0; while [ \"$n\" -lt 10 ] && [ ! -f /var/lib/cloud/instance/boot-finished ]; do echo 'Waiting for cloud-init...'; n=$(( n + 1 )); sleep 1; done",
 		"wget -nv -O ravendb.deb " + ravenPackageUrl,
-		"while ! sudo apt-get update -y; do sleep 1; done", //sometimes 'sudo apt get-update' fails.
+		"timeout 100 bash -c -- 'while ! sudo apt-get update -y; do sleep 1; done'",
 		"sudo apt-get install -y -f ./ravendb.deb",
 	}, "", &stdoutBuf, conn)
 	if err != nil {
@@ -337,13 +333,23 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		return err
 	}
 
-	////stub
-	//for path, content := range sc.Assets {
-	//	err = upload(conn, stdoutBuf, path, content)
-	//	if err != nil {
-	//		return err
-	//	}
-	//}
+	for path, content := range sc.Assets {
+		splittedPath := strings.Split(path, "/")
+		directories := splittedPath[1 : len(splittedPath)-1]
+		absolutePath := strings.Join(directories, "/")
+
+		err = sc.execute(publicIP, []string{
+			"sudo mkdir -p /" + absolutePath,
+		}, "", &stdoutBuf, conn)
+		if err != nil {
+			return err
+		}
+
+		err = upload(conn, stdoutBuf, path, content)
+		if err != nil {
+			return err
+		}
+	}
 
 	if sc.ClusterCertificate != nil && sc.Insecure == false {
 		settings["Security.Certificate.Path"] = "/etc/ravendb/certificate.pfx"
@@ -399,6 +405,25 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	}
 
 	return nil
+}
+
+func (sc *ServerConfig) ConnectToRemoteWithRetry(publicIP string, conn *ssh.Client, authConfig *ssh.ClientConfig) (*ssh.Client, error) {
+	var err error
+	hostAndPort := net.JoinHostPort(publicIP, fmt.Sprint(sc.SSH.getPort()))
+	log.Println("Trying to SHH: " + hostAndPort)
+	for i := 0; i <= NUMBER_OF_RETRIES; i++ {
+		conn, err = ssh.Dial("tcp", hostAndPort, authConfig)
+		if err != nil && i < NUMBER_OF_RETRIES {
+			time.Sleep(time.Second * 2)
+		} else if err == nil {
+			log.Println("Connected to " + hostAndPort)
+			break
+		} else {
+			log.Println("Unable to SSH to " + hostAndPort + " because " + err.Error())
+			return nil, errors.New("Unable to SSH to " + hostAndPort + " because " + err.Error())
+		}
+	}
+	return conn, nil
 }
 
 func (sc *ServerConfig) setupUrls(index int, scheme string, settings map[string]interface{}) (string, error) {
@@ -596,8 +621,7 @@ func (sc *ServerConfig) addNodesToCluster(store *ravendb.DocumentStore) error {
 		return err
 	}
 
-	for _, nodeUrl := range clusterTopology.Topology.AllNodes {
-		var nodTag string
+	for nodeTag, nodeUrl := range clusterTopology.Topology.AllNodes {
 		if contains(sc.Url.List, nodeUrl) {
 			continue
 		} else {
@@ -605,31 +629,21 @@ func (sc *ServerConfig) addNodesToCluster(store *ravendb.DocumentStore) error {
 			if err != nil {
 				return err
 			}
-			if sc.Insecure == false {
-				hostName := strings.Split(parse.Host, ".")
-				tag := strings.ToUpper(hostName[0])
-				err = executeWithRetries(store, &operations.RemoveClusterNode{
-					Node: nodeUrl,
-					Tag:  tag,
-				})
-				if err != nil {
-					return err
-				}
+			hostName := strings.Split(parse.Host, ".")
+			tag := hostName[0]
+			match, err := regexp.MatchString("[A-Za-z]{1,4}", tag)
+			if match == false {
+				tag = nodeTag
 			} else {
-				for key, val := range clusterTopology.Topology.Members {
-					if val == nodeUrl {
-						nodTag = key
-					}
-				}
-				err = executeWithRetries(store, &operations.RemoveClusterNode{
-					Node: nodeUrl,
-					Tag:  nodTag,
-				})
-				if err != nil {
-					return err
-				}
+				tag = strings.ToUpper(tag)
 			}
-
+			err = executeWithRetries(store, &operations.RemoveClusterNode{
+				Node: nodeUrl,
+				Tag:  tag,
+			})
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -711,7 +725,7 @@ func (sc *ServerConfig) RemoveRavenDbInstances() diag.Diagnostics {
 }
 
 func (sc *ServerConfig) createDb(store *ravendb.DocumentStore) error {
-	for i := 0; i < numberOfIterationsToTryAndGetTopology; i++ {
+	for i := 0; i < NUMBER_OF_RETRIES; i++ {
 		topology, err := sc.getClusterTopology(store)
 		if err != nil {
 			return err
@@ -758,7 +772,7 @@ func addNodeToCluster(store *ravendb.DocumentStore, node string) error {
 
 func executeWithRetriesMaintenanceOperations(store *ravendb.DocumentStore, operation ravendb.IVoidMaintenanceOperation) error {
 	var err error
-	for i := 0; i < numberOfIterationsExecuteWithRetries; i++ {
+	for i := 0; i < NUMBER_OF_RETRIES; i++ {
 		err = store.Maintenance().Send(operation)
 		if err == nil {
 			return nil
@@ -772,7 +786,7 @@ func executeWithRetriesMaintenanceOperations(store *ravendb.DocumentStore, opera
 func executeWithRetries(store *ravendb.DocumentStore, operation ravendb.IServerOperation) error {
 	var errNoLeader *ravendb.NoLeaderError
 	var err error
-	for i := 0; i < numberOfIterationsExecuteWithRetries; i++ {
+	for i := 0; i < NUMBER_OF_RETRIES; i++ {
 		err = store.Maintenance().Server().Send(operation)
 		if err == nil {
 			return nil

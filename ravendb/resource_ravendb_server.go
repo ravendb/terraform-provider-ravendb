@@ -405,7 +405,7 @@ func readRavenDbInstances(sc ServerConfig) ([]NodeState, error) {
 	var errResults error
 	errorsChanel := make(chan error, len(sc.Hosts))
 
-	var nodeStateArray []NodeState
+	nodeStateArray := make([]NodeState, len(sc.Hosts))
 
 	for index, publicIp := range sc.Hosts {
 		wg.Add(1)
@@ -421,7 +421,7 @@ func readRavenDbInstances(sc ServerConfig) ([]NodeState, error) {
 				}
 			}
 			wg.Done()
-			nodeStateArray = append(nodeStateArray, nodeState)
+			nodeStateArray[copyOfIndex] =  nodeState
 		}(publicIp, index)
 	}
 
