@@ -470,8 +470,8 @@ github.com/grpc-ecosystem/grpc-gateway v1.9.5/go.mod h1:vNeuVxBJEsws4ogUvrchl83t
 github.com/grpc-ecosystem/grpc-gateway v1.16.0/go.mod h1:BDjrQk3hbvj6Nolgz8mAMFbcEtjT1g+wF4CSlocrBnw=
 github.com/gruntwork-io/go-commons v0.8.0 h1:k/yypwrPqSeYHevLlEDmvmgQzcyTwrlZGRaxEM6G0ro=
 github.com/gruntwork-io/go-commons v0.8.0/go.mod h1:gtp0yTtIBExIZp7vyIV9I0XQkVwiQZze678hvDXof78=
-github.com/gruntwork-io/terratest v0.38.1 h1:vymd5+mrynqre6b1GFGPMuKVE/ta38hGKssKNmVi3Kw=
-github.com/gruntwork-io/terratest v0.38.1/go.mod h1:XzW8PL9pAGbLyiBdQ5OiAeWSNpZ/9ycItjYstSS2PV8=
+github.com/gruntwork-io/terratest v0.38.2 h1:XgDGMxX+dE8Aw96wI8QH6oIzveej01Yk4bTjt6dtzIU=
+github.com/gruntwork-io/terratest v0.38.2/go.mod h1:XzW8PL9pAGbLyiBdQ5OiAeWSNpZ/9ycItjYstSS2PV8=
 github.com/hashicorp/consul/api v1.1.0/go.mod h1:VmuI/Lkw1nC05EYQWNKwWGbkg+FbDBtguAZLlVdkD9Q=
 github.com/hashicorp/consul/sdk v0.1.1/go.mod h1:VKf9jXwCTEY1QZP2MOLRhb5i/I/ssyNV1vwHyQBF0x8=
 github.com/hashicorp/errwrap v0.0.0-20141028054710-7554cd9344ce/go.mod h1:YH+1FKiLXxHSkmPseP+kNlulaMuP3n2brvKWEqk/Jc4=
@@ -751,8 +751,6 @@ github.com/prometheus/procfs v0.1.3/go.mod h1:lV6e/gmhEcM9IjHGsFOCxxuZ+z1YqCvr4O
 github.com/prometheus/procfs v0.2.0/go.mod h1:lV6e/gmhEcM9IjHGsFOCxxuZ+z1YqCvr4OA4YeYWdaU=
 github.com/prometheus/procfs v0.6.0/go.mod h1:cz+aTbrPOrUb4q7XlbU9ygM+/jj0fzG6c1xBZuNvfVA=
 github.com/prometheus/tsdb v0.7.1/go.mod h1:qhTCs0VvXwvX/y3TZrWD7rabWM+ijKTux40TwIPHuXU=
-github.com/ravendb/ravendb-go-client v0.0.0-20211018095638-b52a5504c7bf h1:kOYHjmxZZc2NJfQAzTmVKkxjLZ0ybdwiILxpKoVIcqM=
-github.com/ravendb/ravendb-go-client v0.0.0-20211018095638-b52a5504c7bf/go.mod h1:49H4X7h12wNBkM7ziGy+WxT8S+kLmL2MMV4IIOdDOlA=
 github.com/ravendb/ravendb-go-client v0.0.0-20211027083244-e99e1a2e8a42 h1:Vr0KRtzHwL+ZrYULBd/NjYR6l+yJ4ErFpPlTmCviGpw=
 github.com/ravendb/ravendb-go-client v0.0.0-20211027083244-e99e1a2e8a42/go.mod h1:49H4X7h12wNBkM7ziGy+WxT8S+kLmL2MMV4IIOdDOlA=
 github.com/rogpeppe/fastuuid v0.0.0-20150106093220-6724a57986af/go.mod h1:XWv6SoW27p1b0cqNHllgS5HIMJraePCO15w5zCzIWYg=

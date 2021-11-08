@@ -4,9 +4,9 @@ import (
 	"context"
 	"flag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
+	"github.com/ravendb/terraform-provider-ravendb/ravendb"
 	_ "io/ioutil"
 	"log"
-	"ravendb/ravendb"
 )
 
 func main() {
