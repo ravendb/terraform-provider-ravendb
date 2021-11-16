@@ -71,8 +71,6 @@ locals {
 ```hcl
 locals {
   
-  # Node tags
-  nodes = toset(["a", "b", "c"])
   
   # IP addresses for hosts to deploy RavenDB to
   hosts = [
