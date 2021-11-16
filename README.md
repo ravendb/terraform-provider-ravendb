@@ -74,7 +74,7 @@ locals {
   # Node tags
   nodes = toset(["a", "b", "c"])
   
-  # Ec2 hosts
+  # IP addresses for hosts to deploy RavenDB to
   hosts = [
          "3.95.238.149", 
          "3.87.248.150", 
