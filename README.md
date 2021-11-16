@@ -40,6 +40,7 @@ provider "aws" {
 ```
 ### Local variables for RavenDB server resource 
 
+#### Example getting RavenDB server parameters from EC2 instances Terraform resources
 ```hcl
 locals {
   
@@ -53,30 +54,59 @@ locals {
     ]
   ])
   
-  # This sample represents the nodes that will be used for insecure setup
-  list = flatten([
+  # This sample represents the nodes that will be used for unsecured setup.
+  ravendb_nodes_urls = flatten([
     for instance in module.ec2_instances: [
        "http://${instance.public_ip}:8080"
     ]
   ])
   
-  # This sample represents the nodes that will be used for secure setup
-  list = [for tag in local.nodes : "https://${tag}.omermichleviz.development.run"]
+  # This samples represents the nodes that will be used for secure setup.
+  ravendb_nodes_urls = [for tag in local.nodes : "https://${tag}.omermichleviz.development.run"]
+    
 }
 ```
+#### RavenDB server Terraform resource parameters
+
+```hcl
+locals {
+  
+  # IP addresses for hosts to deploy RavenDB to
+  hosts = [
+         "3.95.238.149", 
+         "3.87.248.150", 
+         "3.95.220.189" 
+         ]
+  
+  # This sample represents the nodes that will be used for unsecured setup.
+  ravendb_nodes_urls = [
+         "http://3.95.238.149:8080", 
+         "http://3.87.248.150:8080", 
+         "http://3.95.220.189:8080"
+         ]
+  
+  # This samples represents the nodes that will be used for secure setup.
+  ravendb_nodes_urls = [
+         "https://a.domain.development.run", 
+         "https://b.domain.development.run", 
+         "https://c.domain.development.run" 
+         ]
+}
+```
+
 
 ### RavenDB server resource
 ```hcl
 resource "ravendb_server" "server" {
   hosts              = local.hosts
   database           = "firewire"
-  insecure           = true
+  unsecured          = true
   certificate        = filebase64("/path/to/cert.pfx")
   package {
     version = "5.2.2"
   }
   url {
-    list      = local.list
+    list      = local.ravendb_nodes_urls
     http_port = 8080
     tcp_port  = 38880
   }
@@ -110,7 +140,7 @@ output "database_name" {
 | certificate - `optional` | The cluster certificate file that is used by RavenDB for server side authentication. | `filebase64` | no 
 | license | The license file that will be used for the setup of the RavenDB cluster. | `filebase64` |yes 
 | package<ul><li>version</li><li>arch - `optional`</li>| Object that represents the version and the OS RavenDB will be running on. Supported architectures are: amd64, arm64 and arm32 | `set`<ul><li>`string`</li><li>`string`</li> | yes |
-| insecure | Whatever to allow to run RavenDB in unsecured mode. This is ***NOT*** recommended! | `bool` | no |
+| unsecured | Whatever to allow to run RavenDB in unsecured mode. This is ***NOT*** recommended! | `bool` | no |
 | settings_override | overriding the settings.json. | `map[string][string]`| no |
 | assets | Upload files given an absolute path. | `map[string][string]`| no |
 | url<ul><li>list</li><li>http_url - `optional`</li><li>tcp_url - `optional`</li></ul>| object that represents the nodes. | `set`<ul><li>`List(string)`</li><li>`int`</li> </li><li>`int`</li>  | yes |
