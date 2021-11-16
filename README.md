@@ -38,9 +38,9 @@ provider "aws" {
   region = "us-east-1"
 }
 ```
-### Local variables for RavenDB server resource. 
+### Local variables for RavenDB server resource 
 
-#### This sample represents iterative assigning approach. 
+#### Example getting RavenDB server parameters from EC2 instances Terraform resources
 ```hcl
 locals {
   
@@ -55,22 +55,21 @@ locals {
   ])
   
   # This sample represents the nodes that will be used for unsecured setup.
-  list = flatten([
+  ravendb_nodes_urls = flatten([
     for instance in module.ec2_instances: [
        "http://${instance.public_ip}:8080"
     ]
   ])
   
   # This samples represents the nodes that will be used for secure setup.
-  list = [for tag in local.nodes : "https://${tag}.omermichleviz.development.run"]
+  ravendb_nodes_urls = [for tag in local.nodes : "https://${tag}.omermichleviz.development.run"]
     
 }
 ```
-#### This sample represents explicit assigning approach.
+#### RavenDB server Terraform resource parameters
 
 ```hcl
 locals {
-  
   
   # IP addresses for hosts to deploy RavenDB to
   hosts = [
@@ -80,14 +79,14 @@ locals {
          ]
   
   # This sample represents the nodes that will be used for unsecured setup.
-  list = [
+  ravendb_nodes_urls = [
          "http://3.95.238.149:8080", 
          "http://3.87.248.150:8080", 
          "http://3.95.220.189:8080"
          ]
   
   # This samples represents the nodes that will be used for secure setup.
-  list = [
+  ravendb_nodes_urls = [
          "https://a.domain.development.run", 
          "https://b.domain.development.run", 
          "https://c.domain.development.run" 
@@ -107,7 +106,7 @@ resource "ravendb_server" "server" {
     version = "5.2.2"
   }
   url {
-    list      = local.list
+    list      = local.ravendb_nodes_urls
     http_port = 8080
     tcp_port  = 38880
   }
