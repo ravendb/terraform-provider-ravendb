@@ -81,7 +81,7 @@ func resourceRavendbServer() *schema.Resource {
 					},
 				},
 			},
-			"insecure": {
+			"unsecured": {
 				Type:        schema.TypeBool,
 				Optional:    true,
 				Description: "Whatever to allow to run RavenDB in unsecured mode. This is ***NOT*** recommended!",
@@ -191,7 +191,7 @@ func resourceRavendbServer() *schema.Resource {
 								Type: schema.TypeString,
 							},
 						},
-						"insecure": {
+						"unsecured": {
 							Type:     schema.TypeBool,
 							Computed: true,
 						},
@@ -238,7 +238,7 @@ func convertNode(node NodeState) map[string]interface{} {
 		"http_url":    node.HttpUrl,
 		"tcp_url":     node.TcpUrl,
 		"assets":      node.Assets,
-		"insecure":    node.Insecure,
+		"unsecured":   node.Unsecured,
 		"version":     node.Version,
 		"failed":      node.Failed,
 	}
@@ -247,8 +247,8 @@ func convertNode(node NodeState) map[string]interface{} {
 func parseData(d *schema.ResourceData) (ServerConfig, error) {
 	var sc ServerConfig
 
-	if insecure, ok := d.GetOk("insecure"); ok {
-		sc.Insecure = insecure.(bool)
+	if unsecured, ok := d.GetOk("unsecured"); ok {
+		sc.Unsecured = unsecured.(bool)
 	}
 
 	hosts := d.Get("hosts").([]interface{})
@@ -327,8 +327,8 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 			sc.Url.HttpPort = httpPort.(int)
 		} else {
 			sc.Url.HttpPort = DEFAULT_SECURE_RAVENDB_HTTP_PORT
-			if sc.Insecure {
-				sc.Url.HttpPort = DEFAULT_INSECURE_RAVENDB_HTTP_PORT
+			if sc.Unsecured {
+				sc.Url.HttpPort = DEFAULT_USECURED_RAVENDB_HTTP_PORT
 			}
 		}
 
@@ -336,14 +336,14 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 			sc.Url.TcpPort = tcpPort.(int)
 		} else {
 			sc.Url.TcpPort = DEFAULT_SECURE_RAVENDB_TCP_PORT
-			if sc.Insecure {
-				sc.Url.TcpPort = DEFAULT_INSECURE_RAVENDB_TCP_PORT
+			if sc.Unsecured {
+				sc.Url.TcpPort = DEFAULT_UNSECURED_RAVENDB_TCP_PORT
 			}
 		}
 	}
 
-	if sc.ClusterCertificate != nil && sc.Insecure == true {
-		return sc, fmt.Errorf("expected insecure to be ture. certificate should be added when using secure mode")
+	if sc.ClusterCertificate != nil && sc.Unsecured == true {
+		return sc, fmt.Errorf("expected unsecure to be ture. certificate should be added when using secure mode")
 	}
 
 	return sc, nil
@@ -421,7 +421,7 @@ func readRavenDbInstances(sc ServerConfig) ([]NodeState, error) {
 				}
 			}
 			wg.Done()
-			nodeStateArray[copyOfIndex] =  nodeState
+			nodeStateArray[copyOfIndex] = nodeState
 		}(publicIp, index)
 	}
 

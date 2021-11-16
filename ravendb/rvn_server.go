@@ -28,9 +28,9 @@ import (
 const (
 	NUMBER_OF_RETRIES                  int = 5
 	DEFAULT_SECURE_RAVENDB_HTTP_PORT   int = 443
-	DEFAULT_INSECURE_RAVENDB_HTTP_PORT int = 8080
+	DEFAULT_USECURED_RAVENDB_HTTP_PORT int = 8080
 	DEFAULT_SECURE_RAVENDB_TCP_PORT    int = 38888
-	DEFAULT_INSECURE_RAVENDB_TCP_PORT  int = 38881
+	DEFAULT_UNSECURED_RAVENDB_TCP_PORT int = 38881
 	DEFAULT_HTTP_PORT                  int = 80
 )
 
@@ -42,7 +42,7 @@ type ServerConfig struct {
 	ClusterCertificate  []byte
 	Url                 Url
 	Assets              map[string][]byte
-	Insecure            bool
+	Unsecured           bool
 	SSH                 SSH
 	HealthcheckDatabase string
 }
@@ -55,7 +55,7 @@ type NodeState struct {
 	HttpUrl            string
 	TcpUrl             string
 	Assets             map[string][]byte
-	Insecure           bool
+	Unsecured          bool
 	Version            string
 	Failed             bool
 }
@@ -95,7 +95,7 @@ func (e *DeployError) Error() string {
 
 func upload(con *ssh.Client, buf bytes.Buffer, path string, content []byte) error {
 	//https://chuacw.ath.cx/development/b/chuacw/archive/2019/02/04/how-the-scp-protocol-works.aspx
- 	session, err := con.NewSession()
+	session, err := con.NewSession()
 	if err != nil {
 		return err
 	}
@@ -135,7 +135,7 @@ func upload(con *ssh.Client, buf bytes.Buffer, path string, content []byte) erro
 	output, err = session.CombinedOutput("sudo chown ravendb:ravendb " + path)
 	buf.Write(output)
 	if err != nil {
-		return errors.New("Failed to ownership: " + path + "\n"+ err.Error() + "\n")
+		return errors.New("Failed to ownership: " + path + "\n" + err.Error() + "\n")
 	}
 
 	return nil
@@ -272,7 +272,7 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 	ns.TcpUrl = ns.Settings["PublicServerUrl"].(string)
 	ns.HttpUrl = ns.Settings["PublicServerUrl.Tcp"].(string)
 	if unsecuredAccessAllowed, ok := ns.Settings["Security.UnsecuredAccessAllowed"]; ok {
-		ns.Insecure = unsecuredAccessAllowed == "PublicNetwork"
+		ns.Unsecured = unsecuredAccessAllowed == "PublicNetwork"
 	}
 
 	delete(ns.Settings, "PublicServerUrl")
@@ -351,7 +351,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		}
 	}
 
-	if sc.ClusterCertificate != nil && sc.Insecure == false {
+	if sc.ClusterCertificate != nil && sc.Unsecured == false {
 		settings["Security.Certificate.Path"] = "/etc/ravendb/certificate.pfx"
 		err = upload(conn, stdoutBuf, "/etc/ravendb/certificate.pfx", sc.ClusterCertificate)
 		if err != nil {
@@ -368,7 +368,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	}
 
 	scheme := "https"
-	if sc.Insecure {
+	if sc.Unsecured {
 		settings["Security.UnsecuredAccessAllowed"] = "PublicNetwork"
 		scheme = "http"
 	}
@@ -438,10 +438,10 @@ func (sc *ServerConfig) setupUrls(index int, scheme string, settings map[string]
 
 func (sc *ServerConfig) GetUrlByIndex(index int, scheme string) (string, string, error) {
 	if sc.Url.HttpPort == 0 {
-		if sc.Insecure == false {
+		if sc.Unsecured == false {
 			sc.Url.HttpPort = DEFAULT_SECURE_RAVENDB_HTTP_PORT
 		} else {
-			sc.Url.HttpPort = DEFAULT_INSECURE_RAVENDB_HTTP_PORT
+			sc.Url.HttpPort = DEFAULT_USECURED_RAVENDB_HTTP_PORT
 		}
 	}
 	if sc.Url.TcpPort == 0 {
@@ -466,7 +466,7 @@ func (sc *ServerConfig) GetUrlByIndex(index int, scheme string) (string, string,
 }
 
 func (sc *ServerConfig) maybeAddHttpPortToHost(host string) string {
-	if sc.Insecure == true && sc.Url.HttpPort != DEFAULT_HTTP_PORT || sc.Insecure == false && sc.Url.HttpPort != DEFAULT_SECURE_RAVENDB_HTTP_PORT {
+	if sc.Unsecured == true && sc.Url.HttpPort != DEFAULT_HTTP_PORT || sc.Unsecured == false && sc.Url.HttpPort != DEFAULT_SECURE_RAVENDB_HTTP_PORT {
 		host += ":" + strconv.Itoa(sc.Url.HttpPort)
 	}
 	return host
@@ -580,7 +580,7 @@ func getStore(config *ServerConfig, index int) (*ravendb.DocumentStore, error) {
 	serverNode := []string{host}
 	store := ravendb.NewDocumentStore(serverNode, config.HealthcheckDatabase)
 
-	if config.Insecure == false {
+	if config.Unsecured == false {
 		key, crt, err := utils.PfxToPem(config.ClusterCertificate)
 
 		if err != nil {
