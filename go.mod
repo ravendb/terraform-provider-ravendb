@@ -6,7 +6,7 @@ require (
 	github.com/gruntwork-io/terratest v0.38.2
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.8.0
-	github.com/ravendb/ravendb-go-client v0.0.0-20211027083244-e99e1a2e8a42
+	github.com/ravendb/ravendb-go-client v0.0.0-20211215144346-f4a24c88da8b
 	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519
 )
 

@@ -1,15 +1,20 @@
 package ravendb
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"io"
+	"io/ioutil"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,11 +55,11 @@ func resourceRavendbServer() *schema.Resource {
 				Optional:    true,
 				Description: "The database name to check whether he is alive or not.",
 			},
-			"certificate": {
+			"cluster_setup_zip": {
 				Type:         schema.TypeString,
 				Optional:     true,
-				Description:  "The cluster certificate file that is used by RavenDB for server side authentication.",
-				ValidateFunc: validation.StringIsBase64,
+				Description:  "This zip file path generated from either RavenDB setup wizard or from RavenDB RVN tool.",
+				ValidateFunc: validation.StringIsNotEmpty,
 			},
 			"license": {
 				Type:         schema.TypeString,
@@ -172,7 +177,7 @@ func resourceRavendbServer() *schema.Resource {
 								Type: schema.TypeString,
 							},
 						},
-						"certificate": {
+						"certificate_holder": {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
@@ -229,23 +234,32 @@ func resourceServerDelete(ctx context.Context, d *schema.ResourceData, meta inte
 	return sc.RemoveRavenDbInstances()
 }
 
-func convertNode(node NodeState) map[string]interface{} {
+func convertNode(node NodeState, index int) map[string]interface{} {
 	return map[string]interface{}{
-		"host":        node.Host,
-		"license":     base64.StdEncoding.EncodeToString(node.Licence),
-		"settings":    node.Settings,
-		"certificate": base64.StdEncoding.EncodeToString(node.ClusterCertificate),
-		"http_url":    node.HttpUrl,
-		"tcp_url":     node.TcpUrl,
-		"assets":      node.Assets,
-		"unsecured":   node.Unsecured,
-		"version":     node.Version,
-		"failed":      node.Failed,
+		"host":               node.Host,
+		"license":            base64.StdEncoding.EncodeToString(node.Licence),
+		"settings":           node.Settings,
+		"certificate_holder": node.ClusterSetupZip[string(index+'A')].String(),
+		"http_url":           node.HttpUrl,
+		"tcp_url":            node.TcpUrl,
+		"assets":             node.Assets,
+		"unsecured":          node.Unsecured,
+		"version":            node.Version,
+		"failed":             node.Failed,
 	}
+}
+
+func (sc CertificateHolder) String() string {
+	out, err := json.Marshal(sc)
+	if err != nil {
+		panic(err)
+	}
+	return string(out)
 }
 
 func parseData(d *schema.ResourceData) (ServerConfig, error) {
 	var sc ServerConfig
+	var err error
 
 	if unsecured, ok := d.GetOk("unsecured"); ok {
 		sc.Unsecured = unsecured.(bool)
@@ -261,13 +275,11 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		sc.HealthcheckDatabase = dbName.(string)
 	}
 
-	certBas64 := d.Get("certificate").(string)
-	cert, err := base64.StdEncoding.DecodeString(certBas64)
-	if err != nil {
-		return sc, err
-	}
-	if allZero(cert) == false {
-		sc.ClusterCertificate = cert
+	if zipPath, ok := d.GetOk("cluster_setup_zip"); ok {
+		sc.ClusterSetupZip, err = OpenZipFile(sc, zipPath.(string))
+		if err != nil {
+			return sc, err
+		}
 	}
 
 	licenseBas64 := d.Get("license").(string)
@@ -317,45 +329,103 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 
 	urlSet := d.Get("url").(*schema.Set).List()
 	for _, v := range urlSet {
-		value := v.(map[string]interface{})
+		value := v.(map[string]interface{}) // After this stage the ports will get zero values.
 		list := value["list"].([]interface{})
 		sc.Url.List = make([]string, len(list))
 		for i, url := range list {
 			sc.Url.List[i] = url.(string)
 		}
-		if httpPort, ok := value["http_port"]; ok {
-			sc.Url.HttpPort = httpPort.(int)
-		} else {
+		if value["http_port"] == 0 {
 			sc.Url.HttpPort = DEFAULT_SECURE_RAVENDB_HTTP_PORT
 			if sc.Unsecured {
 				sc.Url.HttpPort = DEFAULT_USECURED_RAVENDB_HTTP_PORT
 			}
-		}
-
-		if tcpPort, ok := value["tcp_port"]; ok {
-			sc.Url.TcpPort = tcpPort.(int)
 		} else {
+			sc.Url.HttpPort = value["http_port"].(int)
+
+		}
+		if value["tcp_port"] == 0 {
 			sc.Url.TcpPort = DEFAULT_SECURE_RAVENDB_TCP_PORT
 			if sc.Unsecured {
 				sc.Url.TcpPort = DEFAULT_UNSECURED_RAVENDB_TCP_PORT
 			}
+		} else {
+			sc.Url.TcpPort = value["tcp_port"].(int)
 		}
 	}
 
-	if sc.ClusterCertificate != nil && sc.Unsecured == true {
-		return sc, fmt.Errorf("expected unsecure to be ture. certificate should be added when using secure mode")
+	if sc.ClusterSetupZip != nil && sc.Unsecured == true {
+		return sc, fmt.Errorf("expected unsecure to be ture. Certificate should be added when using secure mode")
 	}
 
 	return sc, nil
 }
-func allZero(s []byte) bool {
-	for _, v := range s {
-		if v != 0 {
-			return false
-		}
+
+func OpenZipFile(sc ServerConfig, path string) (map[string]*CertificateHolder, error) {
+	var split []string
+	var zipStruct *CertificateHolder
+
+	zipReader, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, err
 	}
-	return true
+	defer zipReader.Close()
+
+	var rc io.ReadCloser // to avoid defer inside the loop
+	var clusterSetupZip = make(map[string]*CertificateHolder, len(sc.Hosts))
+
+	for _, file := range zipReader.Reader.File {
+		split = strings.Split(file.Name, "/")
+		var name string
+		if len(split) == 1 {
+			name = CREDENTIALS_FOR_SECURE_STORE_FIELD_NAME
+		} else {
+			name = split[0]
+		}
+		if _, found := clusterSetupZip[name]; !found {
+			clusterSetupZip[name] = &CertificateHolder{
+				Pfx:  make([]byte, 0),
+				Cert: make([]byte, 0),
+				Key:  make([]byte, 0),
+			}
+		}
+		zipStruct, err = extractFiles(rc, err, file)
+		if err != nil {
+			return nil, err
+		}
+		clusterSetupZip[name].Pfx = append(clusterSetupZip[name].Pfx, zipStruct.Pfx...)
+		clusterSetupZip[name].Cert = append(clusterSetupZip[name].Cert, zipStruct.Cert...)
+		clusterSetupZip[name].Key = append(clusterSetupZip[name].Key, zipStruct.Key...)
+	}
+
+	return clusterSetupZip, nil
 }
+
+func extractFiles(rc io.ReadCloser, err error, file *zip.File) (*CertificateHolder, error) {
+	var zipStructure CertificateHolder
+	rc, err = file.Open()
+	if err != nil {
+		return &CertificateHolder{}, err
+	}
+	defer rc.Close()
+
+	bytes, err := ioutil.ReadAll(rc)
+	if err != nil {
+		return &CertificateHolder{}, err
+	}
+
+	fileExtension := filepath.Ext(file.Name)
+	switch fileExtension {
+	case ".pfx":
+		zipStructure.Pfx = bytes
+	case ".crt":
+		zipStructure.Cert = bytes
+	case ".key":
+		zipStructure.Key = bytes
+	}
+	return &zipStructure, nil
+}
+
 func validatePackage(sc *ServerConfig) error {
 	arc := strings.ToLower(sc.Package.Arch)
 	if val, ok := packageArchitectures[arc]; ok {
@@ -380,6 +450,11 @@ func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta interf
 		return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
 	}
 
+	certHolder, err := sc.ConvertPfx()
+	if err != nil {
+		return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
+	}
+	sc.ClusterSetupZip["A"] = &certHolder
 	nodes, err := readRavenDbInstances(sc)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
@@ -388,7 +463,7 @@ func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta interf
 	convertedNodes := make([]interface{}, len(nodes))
 	for index, node := range nodes {
 		if node.Failed == false {
-			convertedNodes[index] = convertNode(node)
+			convertedNodes[index] = convertNode(node, index)
 		}
 	}
 

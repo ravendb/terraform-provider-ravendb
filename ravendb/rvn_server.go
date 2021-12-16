@@ -10,8 +10,8 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/ravendb/ravendb-go-client"
+	"github.com/ravendb/ravendb-go-client/serverwide/certificates"
 	"github.com/ravendb/ravendb-go-client/serverwide/operations"
-	"github.com/ravendb/terraform-provider-ravendb/utils"
 	"golang.org/x/crypto/ssh"
 	"log"
 	"net"
@@ -26,12 +26,14 @@ import (
 )
 
 const (
-	NUMBER_OF_RETRIES                  int = 5
-	DEFAULT_SECURE_RAVENDB_HTTP_PORT   int = 443
-	DEFAULT_USECURED_RAVENDB_HTTP_PORT int = 8080
-	DEFAULT_SECURE_RAVENDB_TCP_PORT    int = 38888
-	DEFAULT_UNSECURED_RAVENDB_TCP_PORT int = 38881
-	DEFAULT_HTTP_PORT                  int = 80
+	NUMBER_OF_RETRIES                       int    = 5
+	DEFAULT_SECURE_RAVENDB_HTTP_PORT        int    = 443
+	DEFAULT_USECURED_RAVENDB_HTTP_PORT      int    = 8080
+	DEFAULT_SECURE_RAVENDB_TCP_PORT         int    = 38888
+	DEFAULT_UNSECURED_RAVENDB_TCP_PORT      int    = 38881
+	DEFAULT_HTTP_PORT                       int    = 80
+	CREDENTIALS_FOR_SECURE_STORE_FIELD_NAME string = "store"
+	ADMIN_CERTIFICATE                       string = "Admin Certificate"
 )
 
 type ServerConfig struct {
@@ -39,7 +41,7 @@ type ServerConfig struct {
 	Hosts               []string
 	License             []byte
 	Settings            map[string]interface{}
-	ClusterCertificate  []byte
+	ClusterSetupZip     map[string]*CertificateHolder
 	Url                 Url
 	Assets              map[string][]byte
 	Unsecured           bool
@@ -47,17 +49,23 @@ type ServerConfig struct {
 	HealthcheckDatabase string
 }
 
+type CertificateHolder struct {
+	Pfx  []byte `json:"pfx"`
+	Cert []byte `json:"cert"`
+	Key  []byte `json:"key"`
+}
+
 type NodeState struct {
-	Host               string
-	Licence            []byte
-	Settings           map[string]interface{}
-	ClusterCertificate []byte
-	HttpUrl            string
-	TcpUrl             string
-	Assets             map[string][]byte
-	Unsecured          bool
-	Version            string
-	Failed             bool
+	Host            string
+	Licence         []byte
+	Settings        map[string]interface{}
+	ClusterSetupZip map[string]CertificateHolder
+	HttpUrl         string
+	TcpUrl          string
+	Assets          map[string][]byte
+	Unsecured       bool
+	Version         string
+	Failed          bool
 }
 
 type Package struct {
@@ -187,10 +195,10 @@ func listFiles(conn *ssh.Client, dir string) ([]string, error) {
 }
 
 func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error) {
-
 	var stdoutBuf bytes.Buffer
 	var ns NodeState
 	var conn *ssh.Client
+	var store *ravendb.DocumentStore
 	defer func() {
 		log.Println(stdoutBuf.String())
 	}()
@@ -251,15 +259,27 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 		delete(ns.Assets, "license.json")
 	}
 
-	if cert, ok := ns.Assets["certificate.pfx"]; ok {
-		ns.ClusterCertificate = cert
-		delete(ns.Assets, "certificate.pfx")
+	if cert, ok := ns.Assets["cluster.server.certificate.pfx"]; ok {
+		var certHolder CertificateHolder
+		ns.ClusterSetupZip = make(map[string]CertificateHolder)
+		certHolder.Pfx = cert
+		ns.ClusterSetupZip[string(index+'A')] = certHolder
+		delete(ns.Assets, "cluster.server.certificate.pfx")
 	}
 
-	store, err := getStore(sc, index)
-	if err != nil {
-		return ns, err
+	name := CREDENTIALS_FOR_SECURE_STORE_FIELD_NAME
+	if val, ok := sc.ClusterSetupZip[name]; ok {
+		store, err = getStore(sc, *val)
+		if err != nil {
+			return ns, err
+		}
+	} else {
+		store, err = getStore(sc, ns.ClusterSetupZip[string(index+'A')])
+		if err != nil {
+			return ns, err
+		}
 	}
+
 	buildNumber := operations.OperationGetBuildNumber{}
 	err = executeWithRetries(store, &buildNumber)
 	if err != nil {
@@ -328,7 +348,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	var settings map[string]interface{}
 	err = json.Unmarshal(contents, &settings)
 	if err != nil {
-		stdoutBuf.WriteString("Failed to ravendb settings.json\n")
+		stdoutBuf.WriteString("failed to ravendb settings.json\n")
 		stdoutBuf.Write(contents)
 		return err
 	}
@@ -351,20 +371,19 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		}
 	}
 
-	if sc.ClusterCertificate != nil && sc.Unsecured == false {
-		settings["Security.Certificate.Path"] = "/etc/ravendb/certificate.pfx"
-		err = upload(conn, stdoutBuf, "/etc/ravendb/certificate.pfx", sc.ClusterCertificate)
+	if sc.ClusterSetupZip != nil && sc.Unsecured == false {
+		settings["Security.Certificate.Path"] = "/etc/ravendb/cluster.server.certificate.pfx"
+		err = upload(conn, stdoutBuf, "/etc/ravendb/cluster.server.certificate.pfx", sc.ClusterSetupZip[string(index+'A')].Pfx)
 		if err != nil {
 			return err
 		}
 
 		err = sc.execute(publicIP, []string{
-			"sudo chown ravendb:ravendb /etc/ravendb/certificate.pfx",
+			"sudo chown ravendb:ravendb /etc/ravendb/cluster.server.certificate.pfx",
 		}, "sudo systemctl status ravendb", &stdoutBuf, conn)
 		if err != nil {
 			return err
 		}
-
 	}
 
 	scheme := "https"
@@ -398,13 +417,100 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	err = sc.execute(publicIP, []string{
 		"sudo chown ravendb:ravendb /etc/ravendb/license.json",
 		"sudo systemctl restart ravendb",
-		"timeout 100 bash -c -- 'while ! curl  -v " + httpUrl + "/setup/alive; do sleep 1; done'",
+		//"timeout 100 bash -c -- 'while ! curl -vvv -k " + httpUrl + "/setup/alive; do sleep 1; done'",
+		"timeout 100 bash -c -- 'while ! curl -vvv -k " + httpUrl + "/setup/alive; do echo \"Curl failed with exit code $?\"; sleep 1; done'",
 	}, "sudo systemctl status ravendb", &stdoutBuf, conn)
 	if err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func (sc *ServerConfig) ConvertPfx() (holder CertificateHolder, err error) {
+	if sc.ClusterSetupZip == nil || sc.Unsecured {
+		return holder, nil
+	}
+
+	var stdoutBuf bytes.Buffer
+	var conn *ssh.Client
+	defer func() {
+		log.Println(stdoutBuf.String())
+	}()
+
+	signer, err := ssh.ParsePrivateKey(sc.SSH.Pem)
+	if err != nil {
+		return holder, err
+	}
+	authConfig := &ssh.ClientConfig{
+		User:            sc.SSH.User,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         1 * time.Minute,
+	}
+	conn, err = sc.ConnectToRemoteWithRetry(sc.Hosts[0], conn, authConfig)
+	if err != nil {
+		return holder, err
+	}
+	defer conn.Close()
+
+	return sc.extractServerKeyAndCertForStore(sc.Hosts[0], conn, stdoutBuf)
+}
+
+func (sc *ServerConfig) copyToRemoteGivenAbsolutePath(publicIP string, path string, stdoutBuf bytes.Buffer, conn *ssh.Client, content []byte) error {
+	splittedPath := strings.Split(path, "/")
+	directories := splittedPath[1 : len(splittedPath)-1]
+	absolutePath := strings.Join(directories, "/")
+
+	err := sc.execute(publicIP, []string{
+		"sudo mkdir -p /" + absolutePath,
+	}, "", &stdoutBuf, conn)
+	if err != nil {
+		return err
+	}
+
+	err = upload(conn, stdoutBuf, path, content)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (sc *ServerConfig) extractServerKeyAndCertForStore(publicIP string, conn *ssh.Client, stdoutBuf bytes.Buffer) (CertificateHolder, error) {
+	var certHolder CertificateHolder
+	var pfx = "/etc/ravendb/cluster.server.certificate.pfx"
+	var key = "/etc/ravendb/cluster.server.certificate.key"
+	var crt = "/etc/ravendb/cluster.server.certificate.crt"
+
+	err := sc.execute(publicIP, []string{
+		"sudo openssl pkcs12 -in " + pfx + " -nocerts -nodes -out " + key + " -password pass:",
+		"sudo openssl pkcs12 -in " + pfx + " -clcerts -nokeys -out " + crt + " -password pass:",
+	}, "", &stdoutBuf, conn)
+	if err != nil {
+		return CertificateHolder{}, err
+	}
+
+	bytes, err := readFileContents(key, stdoutBuf, conn)
+	if err != nil {
+		return CertificateHolder{}, err
+	}
+	certHolder.Key = bytes
+
+	bytes, err = readFileContents(crt, stdoutBuf, conn)
+	if err != nil {
+		return CertificateHolder{}, err
+	}
+	certHolder.Cert = bytes
+
+	err = sc.execute(publicIP, []string{
+		"sudo rm " + key + "\n",
+		"sudo rm " + crt + "\n",
+	}, "", &stdoutBuf, conn)
+	if err != nil {
+		return CertificateHolder{}, err
+	}
+
+	return certHolder, nil
 }
 
 func (sc *ServerConfig) ConnectToRemoteWithRetry(publicIP string, conn *ssh.Client, authConfig *ssh.ClientConfig) (*ssh.Client, error) {
@@ -445,7 +551,11 @@ func (sc *ServerConfig) GetUrlByIndex(index int, scheme string) (string, string,
 		}
 	}
 	if sc.Url.TcpPort == 0 {
-		sc.Url.TcpPort = DEFAULT_SECURE_RAVENDB_TCP_PORT
+		if sc.Unsecured == false {
+			sc.Url.HttpPort = DEFAULT_SECURE_RAVENDB_TCP_PORT
+		} else {
+			sc.Url.TcpPort = DEFAULT_UNSECURED_RAVENDB_TCP_PORT
+		}
 	}
 
 	u, err := url.Parse(sc.Url.List[index])
@@ -462,7 +572,6 @@ func (sc *ServerConfig) GetUrlByIndex(index int, scheme string) (string, string,
 		Scheme: "tcp",
 	}
 	return httpUrl.String(), tcpUrl.String(), nil
-
 }
 
 func (sc *ServerConfig) maybeAddHttpPortToHost(host string) string {
@@ -521,17 +630,51 @@ func (sc *ServerConfig) execute(publicIp string, commands []string, onErr string
 
 func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 	var databaseDoesNotExistError *ravendb.DatabaseDoesNotExistError
-	store, err := getStore(sc, 0)
+	var certHolder CertificateHolder
+	var permissions map[string]string
+
+	err := sc.deployRavenDbInstances(parallel)
 	if err != nil {
 		return "", err
 	}
 
-	err = sc.deployRavenDbInstances(parallel)
+	if sc.Unsecured == false {
+		certHolder, err = sc.ConvertPfx()
+		if err != nil {
+			return "", err
+		}
+	}
+
+	store, err := getStore(sc, certHolder)
 	if err != nil {
 		return "", err
 	}
 
 	err = sc.addNodesToCluster(store)
+	if err != nil {
+		return "", err
+	}
+
+	if sc.Unsecured == false {
+		certHolder, permissions, err = sc.getDbPermissionsAndAdminCertHolder()
+		if err != nil {
+			return "", nil
+		}
+
+		err = putCertificateInCluster(
+			store,
+			ADMIN_CERTIFICATE,
+			certHolder.Cert,
+			certificates.ClusterAdmin.String(),
+			permissions)
+		if err != nil {
+			return "", nil
+		}
+	}
+
+	store.Close()
+
+	store, err = getStore(sc, certHolder)
 	if err != nil {
 		return "", err
 	}
@@ -551,7 +694,28 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 		return "", err
 	}
 
+	defer store.Close()
+
 	return clusterTopology.Topology.TopologyID, nil
+}
+
+func (sc *ServerConfig) getDbPermissionsAndAdminCertHolder() (CertificateHolder, map[string]string, error) {
+	var adminCertHolder CertificateHolder
+	var permissions map[string]string
+	permissions = make(map[string]string)
+
+	name := CREDENTIALS_FOR_SECURE_STORE_FIELD_NAME
+	if val, ok := sc.ClusterSetupZip[name]; ok {
+		adminCertHolder = *val
+	} else {
+		return CertificateHolder{}, nil, errors.New("cannot retrieve admin certificate from zip file. ")
+	}
+
+	if len(strings.TrimSpace(sc.HealthcheckDatabase)) != 0 {
+		permissions[sc.HealthcheckDatabase] = certificates.Admin.String()
+	}
+
+	return adminCertHolder, permissions, nil
 }
 
 func (sc *ServerConfig) getDatabaseHealthCheck(store *ravendb.DocumentStore) error {
@@ -572,32 +736,30 @@ func (sc *ServerConfig) getClusterTopology(store *ravendb.DocumentStore) (operat
 	return clusterTopology, nil
 }
 
-func getStore(config *ServerConfig, index int) (*ravendb.DocumentStore, error) {
+func getStore(config *ServerConfig, certificateHolder CertificateHolder) (*ravendb.DocumentStore, error) {
 	var host string
+	var store *ravendb.DocumentStore
 
-	host = config.Url.List[index]
-
+	host = config.Url.List[0]
 	serverNode := []string{host}
-	store := ravendb.NewDocumentStore(serverNode, config.HealthcheckDatabase)
 
-	if config.Unsecured == false {
-		key, crt, err := utils.PfxToPem(config.ClusterCertificate)
+	if len(strings.TrimSpace(config.HealthcheckDatabase)) != 0 {
+		store = ravendb.NewDocumentStore(serverNode, config.HealthcheckDatabase)
+	} else {
+		store = ravendb.NewDocumentStore(serverNode, "")
+	}
 
+	if certificateHolder.Cert != nil {
+		x509KeyPair, err := tls.X509KeyPair(certificateHolder.Cert, certificateHolder.Key)
 		if err != nil {
 			return nil, err
 		}
-
-		cert, err := tls.X509KeyPair(crt, key)
-		if err != nil {
-			return nil, err
-		}
-
-		x509cert, err := x509.ParseCertificate(cert.Certificate[0])
+		x509cert, err := x509.ParseCertificate(x509KeyPair.Certificate[0])
 		if err != nil {
 			return nil, err
 		}
 		store.TrustStore = x509cert
-		store.Certificate = &cert
+		store.Certificate = &x509KeyPair
 	}
 
 	if err := store.Initialize(); err != nil {
@@ -745,6 +907,15 @@ func (sc *ServerConfig) createDb(store *ravendb.DocumentStore) error {
 		return err
 	}
 	return nil
+}
+
+func putCertificateInCluster(store *ravendb.DocumentStore, certificateName string, certificateBytes []byte, securityClearance string, permissions map[string]string) error {
+	return executeWithRetries(store, &certificates.OperationPutCertificate{
+		CertName:          certificateName,
+		CertBytes:         certificateBytes,
+		SecurityClearance: securityClearance,
+		Permissions:       permissions,
+	})
 }
 
 func addNodeToCluster(store *ravendb.DocumentStore, node string) error {

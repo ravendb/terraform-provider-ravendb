@@ -7,6 +7,7 @@ import (
 	test_structure "github.com/gruntwork-io/terratest/modules/test-structure"
 	"github.com/ravendb/ravendb-go-client"
 	"github.com/ravendb/ravendb-go-client/serverwide/operations"
+	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
 	"os"
 	internal_operations "ravendb/operations"
 	"strconv"
