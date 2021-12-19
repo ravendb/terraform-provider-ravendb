@@ -11,7 +11,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"path/filepath"
@@ -372,7 +371,6 @@ func OpenZipFile(sc ServerConfig, path string) (map[string]*CertificateHolder, e
 	}
 	defer zipReader.Close()
 
-	var rc io.ReadCloser // to avoid defer inside the loop
 	var clusterSetupZip = make(map[string]*CertificateHolder, len(sc.Hosts))
 
 	for _, file := range zipReader.Reader.File {
@@ -390,7 +388,7 @@ func OpenZipFile(sc ServerConfig, path string) (map[string]*CertificateHolder, e
 				Key:  make([]byte, 0),
 			}
 		}
-		zipStruct, err = extractFiles(rc, err, file)
+		zipStruct, err = extractFiles(err, file)
 		if err != nil {
 			return nil, err
 		}
@@ -402,9 +400,9 @@ func OpenZipFile(sc ServerConfig, path string) (map[string]*CertificateHolder, e
 	return clusterSetupZip, nil
 }
 
-func extractFiles(rc io.ReadCloser, err error, file *zip.File) (*CertificateHolder, error) {
+func extractFiles(err error, file *zip.File) (*CertificateHolder, error) {
 	var zipStructure CertificateHolder
-	rc, err = file.Open()
+	rc, err := file.Open()
 	if err != nil {
 		return &CertificateHolder{}, err
 	}
