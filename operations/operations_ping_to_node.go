@@ -1,9 +1,9 @@
 package operations
 
 import (
-"encoding/json"
-"github.com/ravendb/ravendb-go-client"
-"net/http"
+	"encoding/json"
+	"github.com/ravendb/ravendb-go-client"
+	"net/http"
 )
 
 type OperationPingToNode struct {
@@ -11,11 +11,11 @@ type OperationPingToNode struct {
 }
 
 type Result struct {
-	URL         string   `json:"Url"`
-	TCPInfoTime int      `json:"TcpInfoTime"`
-	SendTime    int      `json:"SendTime"`
-	ReceiveTime int      `json:"ReceiveTime"`
-	Error       string   `json:"Error"`
+	URL         string `json:"Url"`
+	TCPInfoTime int    `json:"TcpInfoTime"`
+	SendTime    int    `json:"SendTime"`
+	ReceiveTime int    `json:"ReceiveTime"`
+	Error       string `json:"Error"`
 }
 
 func (operation *OperationPingToNode) GetCommand(conventions *ravendb.DocumentConventions) (ravendb.RavenCommand, error) {

@@ -260,10 +260,11 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 	}
 
 	if cert, ok := ns.Assets["cluster.server.certificate.pfx"]; ok {
+		idx := string(index + 'A')
 		var certHolder CertificateHolder
 		ns.ClusterSetupZip = make(map[string]CertificateHolder)
 		certHolder.Pfx = cert
-		ns.ClusterSetupZip[string(index+'A')] = certHolder
+		ns.ClusterSetupZip[idx] = certHolder
 		delete(ns.Assets, "cluster.server.certificate.pfx")
 	}
 
@@ -274,7 +275,8 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 			return ns, err
 		}
 	} else {
-		store, err = getStore(sc, ns.ClusterSetupZip[string(index+'A')])
+		idx := string(index + 'A')
+		store, err = getStore(sc, ns.ClusterSetupZip[idx])
 		if err != nil {
 			return ns, err
 		}
@@ -372,8 +374,9 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	}
 
 	if sc.ClusterSetupZip != nil && sc.Unsecured == false {
+		idx := string(index + 'A')
 		settings["Security.Certificate.Path"] = "/etc/ravendb/cluster.server.certificate.pfx"
-		err = upload(conn, stdoutBuf, "/etc/ravendb/cluster.server.certificate.pfx", sc.ClusterSetupZip[string(index+'A')].Pfx)
+		err = upload(conn, stdoutBuf, "/etc/ravendb/cluster.server.certificate.pfx", sc.ClusterSetupZip[idx].Pfx)
 		if err != nil {
 			return err
 		}

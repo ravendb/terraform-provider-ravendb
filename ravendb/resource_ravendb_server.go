@@ -235,11 +235,12 @@ func resourceServerDelete(ctx context.Context, d *schema.ResourceData, meta inte
 }
 
 func convertNode(node NodeState, index int) map[string]interface{} {
+	idx := string(index + 'A')
 	return map[string]interface{}{
 		"host":               node.Host,
 		"license":            base64.StdEncoding.EncodeToString(node.Licence),
 		"settings":           node.Settings,
-		"certificate_holder": node.ClusterSetupZip[string(index+'A')].String(),
+		"certificate_holder": node.ClusterSetupZip[idx].String(),
 		"http_url":           node.HttpUrl,
 		"tcp_url":            node.TcpUrl,
 		"assets":             node.Assets,
