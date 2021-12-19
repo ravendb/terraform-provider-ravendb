@@ -7,8 +7,8 @@ import (
 	test_structure "github.com/gruntwork-io/terratest/modules/test-structure"
 	"github.com/ravendb/ravendb-go-client"
 	"github.com/ravendb/ravendb-go-client/serverwide/operations"
+	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
 	"os"
-	internal_operations "ravendb/operations"
 	"strconv"
 	"testing"
 )
@@ -103,11 +103,11 @@ func testClusterConnectivity(t *testing.T, options *terraform.Options) error {
 	clusterTopology := operations.OperationGetClusterTopology{}
 	err = executeWithRetries(store, &clusterTopology)
 	if err != nil {
-		return  err
+		return err
 	}
 
 	if len(clusterTopology.Topology.Members) != len(operation.Result) {
-		return errors.New("received number of nodes:" + strconv.Itoa(len(operation.Result))  + " while pinging is not equal to number of nodes existing in the cluster:" + strconv.Itoa(len(clusterTopology.Topology.Members)) )
+		return errors.New("received number of nodes:" + strconv.Itoa(len(operation.Result)) + " while pinging is not equal to number of nodes existing in the cluster:" + strconv.Itoa(len(clusterTopology.Topology.Members)))
 	}
 
 	for _, nodeResult := range operation.Result {
