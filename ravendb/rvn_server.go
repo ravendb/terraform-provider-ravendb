@@ -47,6 +47,7 @@ type ServerConfig struct {
 	Unsecured           bool
 	SSH                 SSH
 	HealthcheckDatabase string
+	Databases           []Database
 }
 
 type CertificateHolder struct {
@@ -66,6 +67,22 @@ type NodeState struct {
 	Unsecured       bool
 	Version         string
 	Failed          bool
+	Databases       []Database
+}
+
+type Database struct {
+	Name              string
+	Settings          map[string]interface{}
+	ReplicationFactor int
+	HardDelete        bool
+	Indexes           []Indexes
+}
+
+type Indexes struct {
+	IndexName     string
+	Maps          []string
+	Reduce        string
+	Configuration map[string]interface{}
 }
 
 type Package struct {
@@ -95,6 +112,28 @@ func (s *SSH) getPort() int {
 type DeployError struct {
 	Output string
 	Err    error
+}
+
+func (idx *Indexes) convertConfiguration() map[string]string {
+	m := make(map[string]string)
+
+	for k, v := range idx.Configuration {
+		strKey := fmt.Sprintf("%v", k)
+		strValue := fmt.Sprintf("%v", v)
+		m[strKey] = strValue
+	}
+	return m
+}
+
+func (ds *Database) convertSettings() map[string]string {
+	m := make(map[string]string)
+
+	for k, v := range ds.Settings {
+		strKey := fmt.Sprintf("%v", k)
+		strValue := fmt.Sprintf("%v", v)
+		m[strKey] = strValue
+	}
+	return m
 }
 
 func (e *DeployError) Error() string {
@@ -658,6 +697,11 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 		return "", err
 	}
 
+	err = sc.filterDatabaseOperation(store)
+	if err != nil {
+		return "", err
+	}
+
 	if sc.Unsecured == false {
 		certHolder, permissions, err = sc.getDbPermissionsAndAdminCertHolder()
 		if err != nil {
@@ -907,6 +951,75 @@ func (sc *ServerConfig) createDb(store *ravendb.DocumentStore) error {
 		}, len(sc.Hosts)))
 
 	if err != nil && reflect.TypeOf(err) != reflect.TypeOf(&ravendb.ConcurrencyError{}) {
+		return err
+	}
+	return nil
+}
+
+func (sc *ServerConfig) filterDatabaseOperation(store *ravendb.DocumentStore) error {
+	for _, dbStruct := range sc.Databases {
+		hdIsNil := reflect.ValueOf(dbStruct.HardDelete).IsNil()
+		idxIsNil := reflect.ValueOf(dbStruct.Indexes).IsNil()
+
+		if hdIsNil != false {
+			err := deleteDatabase(store, dbStruct)
+			if err != nil {
+				return err
+			}
+		} else {
+			err := createDatabase(store, dbStruct)
+			if err != nil {
+				return err
+			}
+
+			if idxIsNil != false {
+				err = createIndexes(store, dbStruct.Indexes)
+				if err != nil {
+					return err
+				}
+			}
+
+		}
+	}
+
+	return nil
+}
+
+func createIndexes(store *ravendb.DocumentStore, indexes []Indexes) error {
+	for i, idx := range indexes {
+		indexName := idx.IndexName
+		index := ravendb.NewIndexCreationTask(indexName)
+		index.Map = idx.Maps[i]
+		index.Reduce = idx.Reduce
+		err := index.Execute(store, nil, "")
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	return nil
+}
+
+func deleteDatabase(store *ravendb.DocumentStore, dbStruct Database) error {
+	createDatabaseOperation := ravendb.NewDeleteDatabasesOperation(dbStruct.Name, dbStruct.HardDelete)
+	err := store.Maintenance().Server().Send(createDatabaseOperation)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func createDatabase(store *ravendb.DocumentStore, dbStruct Database) error {
+	dbRecord := &ravendb.DatabaseRecord{
+		DatabaseName: dbStruct.Name,
+		Settings:     dbStruct.convertSettings(),
+	}
+	createDatabaseOperation := ravendb.NewCreateDatabaseOperation(dbRecord, dbStruct.ReplicationFactor)
+	err := store.Maintenance().Server().Send(createDatabaseOperation)
+	if err != nil {
+		if _, ok := err.(*ravendb.ConcurrencyError); ok {
+			return errors.New("Database " + dbRecord.DatabaseName + " already exists.")
+		}
 		return err
 	}
 	return nil

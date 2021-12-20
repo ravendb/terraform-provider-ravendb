@@ -151,6 +151,33 @@ func resourceRavendbServer() *schema.Resource {
 					},
 				},
 			},
+			"databases": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"database": {
+							Type:     schema.TypeSet,
+							Required: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"name": {
+										Type:     schema.TypeString,
+										Required: true,
+									},
+									"settings": {
+										Type:     schema.TypeMap,
+										Optional: true,
+										Elem: &schema.Schema{
+											Type: schema.TypeString,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			"nodes": {
 				Type:        schema.TypeList,
 				Computed:    true,
@@ -202,6 +229,71 @@ func resourceRavendbServer() *schema.Resource {
 						"failed": {
 							Type:     schema.TypeBool,
 							Computed: true,
+						},
+						"databases": {
+							Type:     schema.TypeSet,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"database": {
+										Type:     schema.TypeSet,
+										Required: true,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"name": {
+													Type:     schema.TypeString,
+													Required: true,
+												},
+												"settings": {
+													Type:     schema.TypeMap,
+													Optional: true,
+													Elem: &schema.Schema{
+														Type: schema.TypeString,
+													},
+												},
+												"hard_delete": {
+													Type:     schema.TypeBool,
+													Optional: true,
+												},
+												"replication_factor": {
+													Type:     schema.TypeInt,
+													Optional: true,
+												},
+												"indexes": {
+													Type: schema.TypeList,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															"index_name": {
+																Type:     schema.TypeString,
+																Required: true,
+															},
+															"maps": {
+																Type:     schema.TypeList,
+																Required: true,
+																Elem: &schema.Schema{
+																	Type: schema.TypeString,
+																},
+															},
+															"reduce": {
+																Type:     schema.TypeString,
+																Required: true,
+															},
+															"configuration": {
+																Type:     schema.TypeMap,
+																Optional: true,
+																Elem: &schema.Schema{
+																	Type: schema.TypeString,
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
 						},
 					},
 				},
@@ -356,11 +448,37 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		} else {
 			sc.Url.TcpPort = value["tcp_port"].(int)
 		}
+
+		databasesList := d.Get("databases").(*schema.Set).List()
+		sc.Databases = []Database{}
+		var database Database
+
+		for _, v := range databasesList {
+			val := v.(map[string]interface{})
+
+			databases := val["database"].(*schema.Set).List()
+			for _, db := range databases {
+				val := db.(map[string]interface{})
+
+				name := val["name"].(string)
+				repFactor := val["replication_factor"].(int)
+				hardDelete := val["hard_delete"].(bool)
+				settings := val["settings"].(map[string]interface{})
+
+				database = Database{
+					Name:              name,
+					Settings:          settings,
+					ReplicationFactor: repFactor,
+					HardDelete:        hardDelete,
+				}
+				sc.Databases = append(sc.Databases, database)
+			}
+		}
+
 	}
 
 	return sc, nil
 }
-
 func OpenZipFile(sc ServerConfig, path string) (map[string]*CertificateHolder, error) {
 	var split []string
 	var zipStruct *CertificateHolder
@@ -388,7 +506,7 @@ func OpenZipFile(sc ServerConfig, path string) (map[string]*CertificateHolder, e
 				Key:  make([]byte, 0),
 			}
 		}
-		zipStruct, err = extractFiles(err, file)
+		zipStruct, err = extractFiles(file)
 		if err != nil {
 			return nil, err
 		}
@@ -400,7 +518,7 @@ func OpenZipFile(sc ServerConfig, path string) (map[string]*CertificateHolder, e
 	return clusterSetupZip, nil
 }
 
-func extractFiles(err error, file *zip.File) (*CertificateHolder, error) {
+func extractFiles(file *zip.File) (*CertificateHolder, error) {
 	var zipStructure CertificateHolder
 	rc, err := file.Open()
 	if err != nil {
