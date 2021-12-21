@@ -389,11 +389,20 @@ func convertNode(node NodeState, index int) map[string]interface{} {
 		"certificate_holder": node.ClusterSetupZip[idx].String(),
 		"http_url":           node.HttpUrl,
 		"tcp_url":            node.TcpUrl,
+		"databases":          convertDatabasesToString(node.Databases),
 		"assets":             node.Assets,
 		"unsecured":          node.Unsecured,
 		"version":            node.Version,
 		"failed":             node.Failed,
 	}
+}
+
+func convertDatabasesToString(dbs []Database) string {
+	out, err := json.Marshal(dbs)
+	if err != nil {
+		panic(err)
+	}
+	return string(out)
 }
 
 func (sc CertificateHolder) String() string {
