@@ -19,7 +19,7 @@ If you have any questions, or need further assistance, you can [contact us direc
 
 | Name | Version |
 |------|---------|
-|ravendb|1.0.0
+|ravendb|1.0.1
 
 ## Sample usage
 
@@ -28,8 +28,8 @@ If you have any questions, or need further assistance, you can [contact us direc
 terraform {
   required_providers {
     ravendb = {
-      source  = "ravendb.net/ravendb/ravendb"
-      version = "1.0.0"
+      source  = "ravendb/ravendb"
+      version = "1.0.1"
     }
   }
 }
