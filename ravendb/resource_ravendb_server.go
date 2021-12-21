@@ -275,10 +275,14 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		sc.HealthcheckDatabase = dbName.(string)
 	}
 
-	if zipPath, ok := d.GetOk("cluster_setup_zip"); ok {
-		sc.ClusterSetupZip, err = OpenZipFile(sc, zipPath.(string))
-		if err != nil {
-			return sc, err
+	if sc.ClusterSetupZip != nil && sc.Unsecured == true {
+		return sc, fmt.Errorf("expected unsecure to be true. Setup ZIP file should be added when using secure mode")
+	} else {
+		if zipPath, ok := d.GetOk("cluster_setup_zip"); ok {
+			sc.ClusterSetupZip, err = OpenZipFile(sc, zipPath.(string))
+			if err != nil {
+				return sc, err
+			}
 		}
 	}
 
@@ -352,10 +356,6 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		} else {
 			sc.Url.TcpPort = value["tcp_port"].(int)
 		}
-	}
-
-	if sc.ClusterSetupZip != nil && sc.Unsecured == true {
-		return sc, fmt.Errorf("expected unsecure to be ture. Certificate should be added when using secure mode")
 	}
 
 	return sc, nil
@@ -449,16 +449,18 @@ func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta interf
 		return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
 	}
 
-	certHolder, err := sc.ConvertPfx()
-	if err != nil {
-		return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
+	if sc.Unsecured == false {
+		certHolder, err := sc.ConvertPfx()
+		if err != nil {
+			return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
+		}
+		sc.ClusterSetupZip["A"] = &certHolder
 	}
-	sc.ClusterSetupZip["A"] = &certHolder
+
 	nodes, err := readRavenDbInstances(sc)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf(errorRead, err.Error()))
 	}
-
 	convertedNodes := make([]interface{}, len(nodes))
 	for index, node := range nodes {
 		if node.Failed == false {
