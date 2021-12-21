@@ -157,8 +157,8 @@ func resourceRavendbServer() *schema.Resource {
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"database": {
-							Type:     schema.TypeSet,
-							Required: true,
+							Type:     schema.TypeList,
+							Required: true, // equals to at least one block is required
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									"name": {
@@ -170,6 +170,53 @@ func resourceRavendbServer() *schema.Resource {
 										Optional: true,
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
+										},
+									},
+									"hard_delete": {
+										Type:     schema.TypeBool,
+										Optional: true,
+									},
+									"replication_factor": {
+										Type:     schema.TypeInt,
+										Optional: true,
+										Default:  1,
+									},
+									"indexes": {
+										Type:     schema.TypeList,
+										Optional: true,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"index": {
+													Type:     schema.TypeSet,
+													Required: true,
+													Elem: &schema.Resource{
+														Schema: map[string]*schema.Schema{
+															"index_name": {
+																Type:     schema.TypeString,
+																Required: true,
+															},
+															"maps": {
+																Type:     schema.TypeList,
+																Required: true,
+																Elem: &schema.Schema{
+																	Type: schema.TypeString,
+																},
+															},
+															"reduce": {
+																Required: true,
+																Type:     schema.TypeString,
+															},
+															"configuration": {
+																Type:     schema.TypeMap,
+																Optional: true,
+																Elem: &schema.Schema{
+																	Type: schema.TypeString,
+																},
+															},
+														},
+													},
+												},
+											},
 										},
 									},
 								},
@@ -233,7 +280,6 @@ func resourceRavendbServer() *schema.Resource {
 						"databases": {
 							Type:     schema.TypeSet,
 							Optional: true,
-							MaxItems: 1,
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									"database": {
@@ -261,29 +307,38 @@ func resourceRavendbServer() *schema.Resource {
 													Optional: true,
 												},
 												"indexes": {
-													Type: schema.TypeList,
+													Type:     schema.TypeSet,
+													Optional: true,
 													Elem: &schema.Resource{
 														Schema: map[string]*schema.Schema{
-															"index_name": {
-																Type:     schema.TypeString,
-																Required: true,
-															},
-															"maps": {
-																Type:     schema.TypeList,
-																Required: true,
-																Elem: &schema.Schema{
-																	Type: schema.TypeString,
-																},
-															},
-															"reduce": {
-																Type:     schema.TypeString,
-																Required: true,
-															},
-															"configuration": {
-																Type:     schema.TypeMap,
+															"index": {
+																Type:     schema.TypeSet,
 																Optional: true,
-																Elem: &schema.Schema{
-																	Type: schema.TypeString,
+																Elem: &schema.Resource{
+																	Schema: map[string]*schema.Schema{
+																		"index_name": {
+																			Type:     schema.TypeString,
+																			Required: true,
+																		},
+																		"maps": {
+																			Type:     schema.TypeList,
+																			Required: true,
+																			Elem: &schema.Schema{
+																				Type: schema.TypeString,
+																			},
+																		},
+																		"reduce": {
+																			Type:     schema.TypeString,
+																			Required: true,
+																		},
+																		"configuration": {
+																			Type:     schema.TypeMap,
+																			Optional: true,
+																			Elem: &schema.Schema{
+																				Type: schema.TypeString,
+																			},
+																		},
+																	},
 																},
 															},
 														},
@@ -450,31 +505,52 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		}
 
 		databasesList := d.Get("databases").(*schema.Set).List()
-		sc.Databases = []Database{}
-		var database Database
-
+		sc.Databases = make([]Database, 0)
 		for _, v := range databasesList {
 			val := v.(map[string]interface{})
 
-			databases := val["database"].(*schema.Set).List()
+			databases := val["database"].([]interface{})
 			for _, db := range databases {
-				val := db.(map[string]interface{})
+				val = db.(map[string]interface{})
 
 				name := val["name"].(string)
 				repFactor := val["replication_factor"].(int)
 				hardDelete := val["hard_delete"].(bool)
-				settings := val["settings"].(map[string]interface{})
 
-				database = Database{
+				settings = val["settings"].(map[string]interface{})
+
+				database := Database{
 					Name:              name,
 					Settings:          settings,
 					ReplicationFactor: repFactor,
 					HardDelete:        hardDelete,
 				}
+
+				indexesList := val["indexes"].([]interface{})
+				for _, index := range indexesList {
+					val := index.(map[string]interface{})
+
+					indexes := val["index"].(*schema.Set).List()
+					for _, index := range indexes {
+						val = index.(map[string]interface{})
+
+						indexName := val["index_name"].(string)
+						reduce := val["reduce"].(string)
+						maps := val["maps"].([]interface{})
+						configuration := val["configuration"].(map[string]interface{})
+
+						dbIndex := Index{
+							IndexName:     indexName,
+							Maps:          maps,
+							Reduce:        reduce,
+							Configuration: configuration,
+						}
+						database.Indexes = append(database.Indexes, dbIndex)
+					}
+				}
 				sc.Databases = append(sc.Databases, database)
 			}
 		}
-
 	}
 
 	return sc, nil

@@ -75,12 +75,12 @@ type Database struct {
 	Settings          map[string]interface{}
 	ReplicationFactor int
 	HardDelete        bool
-	Indexes           []Indexes
+	Indexes           []Index
 }
 
-type Indexes struct {
+type Index struct {
 	IndexName     string
-	Maps          []string
+	Maps          []interface{}
 	Reduce        string
 	Configuration map[string]interface{}
 }
@@ -114,7 +114,7 @@ type DeployError struct {
 	Err    error
 }
 
-func (idx *Indexes) convertConfiguration() map[string]string {
+func (idx *Index) convertConfiguration() map[string]string {
 	m := make(map[string]string)
 
 	for k, v := range idx.Configuration {
@@ -985,11 +985,11 @@ func (sc *ServerConfig) filterDatabaseOperation(store *ravendb.DocumentStore) er
 	return nil
 }
 
-func createIndexes(store *ravendb.DocumentStore, indexes []Indexes) error {
+func createIndexes(store *ravendb.DocumentStore, indexes []Index) error {
 	for i, idx := range indexes {
 		indexName := idx.IndexName
 		index := ravendb.NewIndexCreationTask(indexName)
-		index.Map = idx.Maps[i]
+		index.Map = idx.Maps[i].(string)
 		index.Reduce = idx.Reduce
 		err := index.Execute(store, nil, "")
 		if err != nil {
