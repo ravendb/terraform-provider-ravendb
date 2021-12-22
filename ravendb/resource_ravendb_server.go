@@ -165,6 +165,12 @@ func resourceRavendbServer() *schema.Resource {
 										Type:     schema.TypeString,
 										Required: true,
 									},
+									"key": {
+										Type:         schema.TypeString,
+										Optional:     true,
+										Sensitive:    true,
+										ValidateFunc: validation.StringIsBase64,
+									},
 									"settings": {
 										Type:     schema.TypeMap,
 										Optional: true,
@@ -290,6 +296,12 @@ func resourceRavendbServer() *schema.Resource {
 												"name": {
 													Type:     schema.TypeString,
 													Required: true,
+												},
+												"key": {
+													Type:         schema.TypeString,
+													Optional:     true,
+													Sensitive:    true,
+													ValidateFunc: validation.StringIsBase64,
 												},
 												"settings": {
 													Type:     schema.TypeMap,
@@ -431,14 +443,14 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		sc.HealthcheckDatabase = dbName.(string)
 	}
 
-	if sc.ClusterSetupZip != nil && sc.Unsecured == true {
-		return sc, fmt.Errorf("expected unsecure to be true. Setup ZIP file should be added when using secure mode")
-	} else {
-		if zipPath, ok := d.GetOk("cluster_setup_zip"); ok {
+	if zipPath, ok := d.GetOk("cluster_setup_zip"); ok {
+		if sc.Unsecured == false {
 			sc.ClusterSetupZip, err = OpenZipFile(sc, zipPath.(string))
 			if err != nil {
 				return sc, err
 			}
+		} else {
+			return sc, fmt.Errorf("expected unsecure to be true. Setup ZIP file should be added when using secure mode")
 		}
 	}
 
@@ -525,6 +537,7 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 				name := val["name"].(string)
 				repFactor := val["replication_factor"].(int)
 				hardDelete := val["hard_delete"].(bool)
+				key := val["key"].(string)
 
 				settings = val["settings"].(map[string]interface{})
 
@@ -532,6 +545,7 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 					Name:              name,
 					Settings:          settings,
 					ReplicationFactor: repFactor,
+					Key:               key,
 					HardDelete:        hardDelete,
 				}
 

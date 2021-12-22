@@ -12,6 +12,7 @@ import (
 	"github.com/ravendb/ravendb-go-client"
 	"github.com/ravendb/ravendb-go-client/serverwide/certificates"
 	"github.com/ravendb/ravendb-go-client/serverwide/operations"
+	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
 	"golang.org/x/crypto/ssh"
 	"log"
 	"net"
@@ -75,6 +76,7 @@ type Database struct {
 	Settings          map[string]interface{}
 	ReplicationFactor int
 	HardDelete        bool
+	Key               string
 	Indexes           []Index
 }
 
@@ -967,18 +969,16 @@ func (sc *ServerConfig) filterDatabaseOperation(store *ravendb.DocumentStore) er
 				return err
 			}
 		} else {
-			err := createDatabase(store, dbStruct)
+			err := createDatabase(store, dbStruct, sc.Unsecured)
 			if err != nil {
 				return err
 			}
-
 			if idxIsNil != false {
 				err = createIndexes(store, dbStruct.Indexes)
 				if err != nil {
 					return err
 				}
 			}
-
 		}
 	}
 
@@ -1009,12 +1009,31 @@ func deleteDatabase(store *ravendb.DocumentStore, dbStruct Database) error {
 	return nil
 }
 
-func createDatabase(store *ravendb.DocumentStore, dbStruct Database) error {
-	dbRecord := &ravendb.DatabaseRecord{
-		DatabaseName: dbStruct.Name,
-		Settings:     dbStruct.convertSettings(),
+func createDatabase(store *ravendb.DocumentStore, dbStruct Database, unsecured bool) error {
+	var dbRecord ravendb.DatabaseRecord
+
+	dbRecord.DatabaseName = dbStruct.Name
+	dbRecord.Settings = dbStruct.convertSettings()
+
+	if len(strings.TrimSpace(dbStruct.Key)) != 0 {
+		if unsecured == false {
+			dbRecord.Encrypted = true
+			operation := internal_operations.OperationDistributeSecretKey{
+				Name: dbRecord.DatabaseName,
+				Node: "A", // Will send the key to all the nodes
+				Key:  dbStruct.Key,
+			}
+			err := executeWithRetries(store, &operation)
+			if err != nil {
+				return err
+			}
+		} else {
+			return errors.New("Database encryption is available on secured mode only. ")
+		}
+
 	}
-	createDatabaseOperation := ravendb.NewCreateDatabaseOperation(dbRecord, dbStruct.ReplicationFactor)
+
+	createDatabaseOperation := ravendb.NewCreateDatabaseOperation(&dbRecord, dbStruct.ReplicationFactor)
 	err := store.Maintenance().Server().Send(createDatabaseOperation)
 	if err != nil {
 		if _, ok := err.(*ravendb.ConcurrencyError); ok {
