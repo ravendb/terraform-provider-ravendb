@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/ravendb/ravendb-go-client"
 	"net/http"
+	"net/url"
 )
 
 type OperationDistributeSecretKey struct {
@@ -28,9 +29,17 @@ type operationDistributeSecretKey struct {
 }
 
 func (o *operationDistributeSecretKey) CreateRequest(node *ravendb.ServerNode) (*http.Request, error) {
-	url := node.URL + "/admin/secrets/distribute?" + o.parent.Name + "&" + o.parent.Node
+	base, err := url.Parse(node.URL + "/admin/secrets/distribute")
+	if err != nil {
+		return nil, err
+	}
+	params := url.Values{}
+	params.Add("name", o.parent.Name)
+	params.Add("node", o.parent.Node)
+	base.RawQuery = params.Encode()
+
 	keyBytes := []byte(o.parent.Key)
-	return http.NewRequest(http.MethodPost, url, bytes.NewBuffer(keyBytes))
+	return http.NewRequest(http.MethodPost, base.String(), bytes.NewBuffer(keyBytes))
 }
 
 func (o *operationDistributeSecretKey) SetResponse(response []byte, fromCache bool) error {

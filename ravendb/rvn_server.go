@@ -12,7 +12,6 @@ import (
 	"github.com/ravendb/ravendb-go-client"
 	"github.com/ravendb/ravendb-go-client/serverwide/certificates"
 	"github.com/ravendb/ravendb-go-client/serverwide/operations"
-	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
 	"golang.org/x/crypto/ssh"
 	"log"
 	"net"
@@ -676,11 +675,11 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 	var databaseDoesNotExistError *ravendb.DatabaseDoesNotExistError
 	var certHolder CertificateHolder
 	var permissions map[string]string
-
-	err := sc.deployRavenDbInstances(parallel)
-	if err != nil {
-		return "", err
-	}
+	var err error
+	//err := sc.deployRavenDbInstances(parallel)
+	//if err != nil {
+	//	return "", err
+	//}
 
 	if sc.Unsecured == false {
 		certHolder, err = sc.ConvertPfx()
@@ -694,12 +693,12 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 		return "", err
 	}
 
-	err = sc.addNodesToCluster(store)
-	if err != nil {
-		return "", err
-	}
+	//err = sc.addNodesToCluster(store)
+	//if err != nil {
+	//	return "", err
+	//}
 
-	err = sc.filterDatabaseOperation(store)
+	err = sc.filterDatabaseOperation(store, certHolder)
 	if err != nil {
 		return "", err
 	}
@@ -958,30 +957,49 @@ func (sc *ServerConfig) createDb(store *ravendb.DocumentStore) error {
 	return nil
 }
 
-func (sc *ServerConfig) filterDatabaseOperation(store *ravendb.DocumentStore) error {
+func (sc *ServerConfig) filterDatabaseOperation(store *ravendb.DocumentStore, holder CertificateHolder) error {
 	for _, dbStruct := range sc.Databases {
-		hdIsNil := reflect.ValueOf(dbStruct.HardDelete).IsNil()
-		idxIsNil := reflect.ValueOf(dbStruct.Indexes).IsNil()
+		//ardDeleteIsNil := reflect.ValueOf(&dbStruct.HardDelete).IsNil()
+		idxIsNil := reflect.ValueOf(&dbStruct.Indexes).IsNil()
 
-		if hdIsNil != false {
-			err := deleteDatabase(store, dbStruct)
+		//if hardDeleteIsNil != true {
+		//	err := deleteDatabase(store, dbStruct)
+		//	if err != nil {
+		//		return err
+		//	}
+		//} else {
+		err := putSecretKeyInCluster(sc, store, dbStruct, holder)
+		err = createDatabase(store, dbStruct)
+		if err != nil {
+			return err
+		}
+		if idxIsNil == false {
+			err = createIndexes(store, dbStruct.Indexes)
 			if err != nil {
 				return err
 			}
-		} else {
-			err := createDatabase(store, dbStruct, sc.Unsecured)
-			if err != nil {
-				return err
-			}
-			if idxIsNil != false {
-				err = createIndexes(store, dbStruct.Indexes)
+		}
+		//}
+	}
+
+	return nil
+}
+
+func putSecretKeyInCluster(sc *ServerConfig, store *ravendb.DocumentStore, dbStruct Database, holder CertificateHolder) error {
+	if len(strings.TrimSpace(dbStruct.Key)) != 0 {
+		if sc.Unsecured == false {
+			for _, node := range sc.Url.List {
+				command := ravendb.NewPutSecretKeyCommand(dbStruct.Name, dbStruct.Key, true)
+				requestExecutor := ravendb.ClusterRequestExecutorCreateForSingleNode(node, store.Certificate, store.TrustStore, store.GetConventions())
+				err := requestExecutor.ExecuteCommand(command, nil)
 				if err != nil {
 					return err
 				}
 			}
+		} else {
+			return errors.New("Database encryption is available on secured mode only. ")
 		}
 	}
-
 	return nil
 }
 
@@ -1009,29 +1027,11 @@ func deleteDatabase(store *ravendb.DocumentStore, dbStruct Database) error {
 	return nil
 }
 
-func createDatabase(store *ravendb.DocumentStore, dbStruct Database, unsecured bool) error {
+func createDatabase(store *ravendb.DocumentStore, dbStruct Database) error {
 	var dbRecord ravendb.DatabaseRecord
-
 	dbRecord.DatabaseName = dbStruct.Name
-	dbRecord.Settings = dbStruct.convertSettings()
-
-	if len(strings.TrimSpace(dbStruct.Key)) != 0 {
-		if unsecured == false {
-			dbRecord.Encrypted = true
-			operation := internal_operations.OperationDistributeSecretKey{
-				Name: dbRecord.DatabaseName,
-				Node: "A", // Will send the key to all the nodes
-				Key:  dbStruct.Key,
-			}
-			err := executeWithRetries(store, &operation)
-			if err != nil {
-				return err
-			}
-		} else {
-			return errors.New("Database encryption is available on secured mode only. ")
-		}
-
-	}
+	//dbRecord.Settings = dbStruct.convertSettings()
+	dbRecord.Encrypted = true
 
 	createDatabaseOperation := ravendb.NewCreateDatabaseOperation(&dbRecord, dbStruct.ReplicationFactor)
 	err := store.Maintenance().Server().Send(createDatabaseOperation)
@@ -1043,6 +1043,41 @@ func createDatabase(store *ravendb.DocumentStore, dbStruct Database, unsecured b
 	}
 	return nil
 }
+
+//func createDatabase(store *ravendb.DocumentStore, dbStruct Database, unsecured bool) error {
+//	var dbRecord ravendb.DatabaseRecord
+//
+//	dbRecord.DatabaseName = dbStruct.Name
+//	dbRecord.Settings = dbStruct.convertSettings()
+//
+//	if len(strings.TrimSpace(dbStruct.Key)) != 0 {
+//		if unsecured == false {
+//			dbRecord.Encrypted = true
+//			operation := internal_operations.OperationDistributeSecretKey{
+//				Name: dbRecord.DatabaseName,
+//				Node: "A", // Will send the key to all the nodes
+//				Key:  dbStruct.Key,
+//			}
+//			err := executeWithRetries(store, &operation)
+//			if err != nil {
+//				return err
+//			}
+//		} else {
+//			return errors.New("Database encryption is available on secured mode only. ")
+//		}
+//
+//	}
+//
+//	createDatabaseOperation := ravendb.NewCreateDatabaseOperation(&dbRecord, dbStruct.ReplicationFactor)
+//	err := store.Maintenance().Server().Send(createDatabaseOperation)
+//	if err != nil {
+//		if _, ok := err.(*ravendb.ConcurrencyError); ok {
+//			return errors.New("Database " + dbRecord.DatabaseName + " already exists.")
+//		}
+//		return err
+//	}
+//	return nil
+//}
 
 func putCertificateInCluster(store *ravendb.DocumentStore, certificateName string, certificateBytes []byte, securityClearance string, permissions map[string]string) error {
 	return executeWithRetries(store, &certificates.OperationPutCertificate{
