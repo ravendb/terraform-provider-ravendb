@@ -958,34 +958,34 @@ func (sc *ServerConfig) createDb(store *ravendb.DocumentStore) error {
 }
 
 func (sc *ServerConfig) filterDatabaseOperation(store *ravendb.DocumentStore, holder CertificateHolder) error {
+	var err error
 	for _, dbStruct := range sc.Databases {
-		//ardDeleteIsNil := reflect.ValueOf(&dbStruct.HardDelete).IsNil()
+		hardDeleteIsNil := reflect.ValueOf(&dbStruct.HardDelete).IsNil()
 		idxIsNil := reflect.ValueOf(&dbStruct.Indexes).IsNil()
 
-		//if hardDeleteIsNil != true {
-		//	err := deleteDatabase(store, dbStruct)
-		//	if err != nil {
-		//		return err
-		//	}
-		//} else {
-		err := putSecretKeyInCluster(sc, store, dbStruct, holder)
-		err = createDatabase(store, dbStruct)
-		if err != nil {
-			return err
-		}
-		if idxIsNil == false {
-			err = createIndexes(store, dbStruct.Indexes)
+		if hardDeleteIsNil != true {
+			err = deleteDatabase(store, dbStruct)
 			if err != nil {
 				return err
 			}
+		} else {
+			err = putSecretKeyInCluster(sc, store, dbStruct)
+			err = createDatabase(sc, store, dbStruct)
+			if err != nil {
+				return err
+			}
+			if idxIsNil == false {
+				err := createIndexes(store, dbStruct.Name, dbStruct.Indexes)
+				if err != nil {
+					return err
+				}
+			}
 		}
-		//}
 	}
-
 	return nil
 }
 
-func putSecretKeyInCluster(sc *ServerConfig, store *ravendb.DocumentStore, dbStruct Database, holder CertificateHolder) error {
+func putSecretKeyInCluster(sc *ServerConfig, store *ravendb.DocumentStore, dbStruct Database) error {
 	if len(strings.TrimSpace(dbStruct.Key)) != 0 {
 		if sc.Unsecured == false {
 			for _, node := range sc.Url.List {
@@ -997,19 +997,19 @@ func putSecretKeyInCluster(sc *ServerConfig, store *ravendb.DocumentStore, dbStr
 				}
 			}
 		} else {
-			return errors.New("Database encryption is available on secured mode only. ")
+			return errors.New("Database encryption is available on secured mode. ")
 		}
 	}
 	return nil
 }
 
-func createIndexes(store *ravendb.DocumentStore, indexes []Index) error {
+func createIndexes(store *ravendb.DocumentStore, databaseName string, indexes []Index) error {
 	for i, idx := range indexes {
 		indexName := idx.IndexName
 		index := ravendb.NewIndexCreationTask(indexName)
 		index.Map = idx.Maps[i].(string)
 		index.Reduce = idx.Reduce
-		err := index.Execute(store, nil, "")
+		err := index.Execute(store, store.GetConventions(), databaseName)
 		if err != nil {
 			return err
 		}
@@ -1027,11 +1027,15 @@ func deleteDatabase(store *ravendb.DocumentStore, dbStruct Database) error {
 	return nil
 }
 
-func createDatabase(store *ravendb.DocumentStore, dbStruct Database) error {
+func createDatabase(sc *ServerConfig, store *ravendb.DocumentStore, dbStruct Database) error {
 	var dbRecord ravendb.DatabaseRecord
+
+	if sc.Unsecured == false {
+		dbRecord.Encrypted = true
+	}
+
 	dbRecord.DatabaseName = dbStruct.Name
-	//dbRecord.Settings = dbStruct.convertSettings()
-	dbRecord.Encrypted = true
+	dbRecord.Settings = dbStruct.convertSettings()
 
 	createDatabaseOperation := ravendb.NewCreateDatabaseOperation(&dbRecord, dbStruct.ReplicationFactor)
 	err := store.Maintenance().Server().Send(createDatabaseOperation)

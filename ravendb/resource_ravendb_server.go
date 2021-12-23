@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	errorCreate = "error while creating RavenDB instances: %s"
-	errorRead   = "error reading RavenDB configuration information: %s"
-	errorDelete = "error deleting RavenDB instances: %s"
+	errorCreate = "error while creating RavenDB instances: %s\n"
+	errorRead   = "error reading RavenDB configuration information: %s\n"
+	errorDelete = "error deleting RavenDB instances: %s\n"
 )
 
 var packageArchitectures = map[string]string{
@@ -62,6 +62,7 @@ func resourceRavendbServer() *schema.Resource {
 			},
 			"license": {
 				Type:         schema.TypeString,
+				Sensitive:    true,
 				Required:     true,
 				Description:  "The license that will be used for the setup of the RavenDB cluster.",
 				ValidateFunc: validation.StringIsBase64,
@@ -140,11 +141,13 @@ func resourceRavendbServer() *schema.Resource {
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"user": {
-							Type:     schema.TypeString,
-							Required: true,
+							Type:      schema.TypeString,
+							Sensitive: true,
+							Required:  true,
 						},
 						"pem": {
 							Type:         schema.TypeString,
+							Sensitive:    true,
 							Required:     true,
 							ValidateFunc: validation.StringIsBase64,
 						},
@@ -180,6 +183,7 @@ func resourceRavendbServer() *schema.Resource {
 									},
 									"hard_delete": {
 										Type:     schema.TypeBool,
+										Default:  false,
 										Optional: true,
 									},
 									"replication_factor": {
@@ -242,8 +246,9 @@ func resourceRavendbServer() *schema.Resource {
 							Computed: true,
 						},
 						"license": {
-							Type:     schema.TypeString,
-							Computed: true,
+							Type:      schema.TypeString,
+							Sensitive: true,
+							Computed:  true,
 						},
 						"version": {
 							Type:     schema.TypeString,
@@ -285,7 +290,7 @@ func resourceRavendbServer() *schema.Resource {
 						},
 						"databases": {
 							Type:     schema.TypeSet,
-							Optional: true,
+							Computed: true,
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									"database": {
@@ -295,57 +300,57 @@ func resourceRavendbServer() *schema.Resource {
 											Schema: map[string]*schema.Schema{
 												"name": {
 													Type:     schema.TypeString,
-													Required: true,
+													Computed: true,
 												},
 												"key": {
 													Type:         schema.TypeString,
-													Optional:     true,
+													Computed:     true,
 													Sensitive:    true,
 													ValidateFunc: validation.StringIsBase64,
 												},
 												"settings": {
 													Type:     schema.TypeMap,
-													Optional: true,
+													Computed: true,
 													Elem: &schema.Schema{
 														Type: schema.TypeString,
 													},
 												},
 												"hard_delete": {
 													Type:     schema.TypeBool,
-													Optional: true,
+													Computed: true,
 												},
 												"replication_factor": {
 													Type:     schema.TypeInt,
-													Optional: true,
+													Computed: true,
 												},
 												"indexes": {
 													Type:     schema.TypeSet,
-													Optional: true,
+													Computed: true,
 													Elem: &schema.Resource{
 														Schema: map[string]*schema.Schema{
 															"index": {
 																Type:     schema.TypeSet,
-																Optional: true,
+																Computed: true,
 																Elem: &schema.Resource{
 																	Schema: map[string]*schema.Schema{
 																		"index_name": {
 																			Type:     schema.TypeString,
-																			Required: true,
+																			Computed: true,
 																		},
 																		"maps": {
 																			Type:     schema.TypeList,
-																			Required: true,
+																			Computed: true,
 																			Elem: &schema.Schema{
 																				Type: schema.TypeString,
 																			},
 																		},
 																		"reduce": {
 																			Type:     schema.TypeString,
-																			Required: true,
+																			Computed: true,
 																		},
 																		"configuration": {
 																			Type:     schema.TypeMap,
-																			Optional: true,
+																			Computed: true,
 																			Elem: &schema.Schema{
 																				Type: schema.TypeString,
 																			},
@@ -392,37 +397,48 @@ func resourceServerDelete(ctx context.Context, d *schema.ResourceData, meta inte
 	return sc.RemoveRavenDbInstances()
 }
 
-func convertNode(node NodeState, index int) map[string]interface{} {
+func convertNode(node NodeState, index int) (map[string]interface{}, error) {
 	idx := string(index + 'A')
+
+	convertDatabases, err := convertDatabasesToString(node.Databases)
+	if err != nil {
+		return nil, err
+	}
+
+	convertCert, err := node.ClusterSetupZip[idx].String()
+	if err != nil {
+		return nil, err
+	}
+
 	return map[string]interface{}{
 		"host":               node.Host,
 		"license":            base64.StdEncoding.EncodeToString(node.Licence),
 		"settings":           node.Settings,
-		"certificate_holder": node.ClusterSetupZip[idx].String(),
+		"certificate_holder": convertCert,
 		"http_url":           node.HttpUrl,
 		"tcp_url":            node.TcpUrl,
-		"databases":          convertDatabasesToString(node.Databases),
+		"databases":          convertDatabases,
 		"assets":             node.Assets,
 		"unsecured":          node.Unsecured,
 		"version":            node.Version,
 		"failed":             node.Failed,
-	}
+	}, nil
 }
 
-func convertDatabasesToString(dbs []Database) string {
+func convertDatabasesToString(dbs []Database) (string, error) {
 	out, err := json.Marshal(dbs)
 	if err != nil {
-		panic(err)
+		return "", nil
 	}
-	return string(out)
+	return string(out), nil
 }
 
-func (sc CertificateHolder) String() string {
+func (sc CertificateHolder) String() (string, error) {
 	out, err := json.Marshal(sc)
 	if err != nil {
-		panic(err)
+		return "", nil
 	}
-	return string(out)
+	return string(out), nil
 }
 
 func parseData(d *schema.ResourceData) (ServerConfig, error) {
@@ -681,7 +697,11 @@ func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta interf
 	convertedNodes := make([]interface{}, len(nodes))
 	for index, node := range nodes {
 		if node.Failed == false {
-			convertedNodes[index] = convertNode(node, index)
+			convertedMap, err := convertNode(node, index)
+			if err != nil {
+				return diag.FromErr(fmt.Errorf(errorRead, "unable to convert node. Index of node: "+strconv.Itoa(index)+err.Error()))
+			}
+			convertedNodes[index] = convertedMap
 		}
 	}
 
