@@ -50,6 +50,7 @@ type ServerConfig struct {
 	HealthcheckDatabase string                        `json:"HealthcheckDatabase,omitempty"`
 	Databases           []Database                    `json:"Databases,omitempty"`
 	DatabasesToDelete   []DatabaseToDelete            `json:"DatabasesToDelete,omitempty"`
+	IndexesToDelete     []IndexesToDelete             `json:"IndexesToDelete,omitempty"`
 }
 
 type CertificateHolder struct {
@@ -71,6 +72,11 @@ type NodeState struct {
 	Failed            bool                         `json:"Failed,omitempty"`
 	Databases         []Database                   `json:"Databases,omitempty"`
 	DatabasesToDelete []DatabaseToDelete           `json:"DatabasesToDelete,omitempty"`
+	IndexesToDelete   []IndexesToDelete            `json:"IndexesToDelete,omitempty"`
+}
+type IndexesToDelete struct {
+	DatabaseName string   `json:"DatabaseName,omitempty"`
+	IndexesNames []string `json:"IndexesNames,omitempty"`
 }
 
 type DatabaseToDelete struct {
@@ -79,18 +85,18 @@ type DatabaseToDelete struct {
 }
 
 type Database struct {
-	Name             string                 `json:"Name,omitempty"`
-	Settings         map[string]interface{} `json:"Settings,omitempty"`
-	ReplicationNodes []string               `json:"ReplicationNodes,omitempty"`
-	Key              string                 `json:"Key,omitempty"`
-	Indexes          []Index                `json:"Indexes,omitempty"`
+	Name             string            `json:"Name,omitempty"`
+	Settings         map[string]string `json:"Settings,omitempty"`
+	ReplicationNodes []string          `json:"ReplicationNodes,omitempty"`
+	Key              string            `json:"Key,omitempty"`
+	Indexes          []Index           `json:"Indexes,omitempty"`
 }
 
 type Index struct {
-	IndexName     string                 `json:"IndexName,omitempty"`
-	Maps          []string               `json:"Maps,omitempty"`
-	Reduce        string                 `json:"Reduce,omitempty"`
-	Configuration map[string]interface{} `json:"Configuration,omitempty"`
+	IndexName     string            `json:"IndexName,omitempty"`
+	Maps          []string          `json:"Maps,omitempty"`
+	Reduce        string            `json:"Reduce,omitempty"`
+	Configuration map[string]string `json:"Configuration,omitempty"`
 }
 
 type Package struct {
@@ -307,7 +313,7 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 	}
 
 	if cert, ok := ns.Assets["cluster.server.certificate.pfx"]; ok {
-		idx := string(index + 'A')
+		idx := string(rune(index + 'A'))
 		var certHolder CertificateHolder
 		ns.ClusterSetupZip = make(map[string]CertificateHolder)
 		certHolder.Pfx = cert
@@ -322,7 +328,7 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 			return ns, err
 		}
 	} else {
-		idx := string(index + 'A')
+		idx := string(rune(index + 'A'))
 		store, err = getStore(sc, ns.ClusterSetupZip[idx])
 		if err != nil {
 			return ns, err
@@ -369,6 +375,10 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 				Indexes:          database.Indexes,
 			})
 		}
+	}
+
+	if len(sc.IndexesToDelete) != 0 {
+		ns.IndexesToDelete = sc.IndexesToDelete
 	}
 
 	return ns, nil
@@ -443,7 +453,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	}
 
 	if sc.ClusterSetupZip != nil && sc.Unsecured == false {
-		idx := string(index + 'A')
+		idx := string(rune(index + 'A'))
 		settings["Security.Certificate.Path"] = "/etc/ravendb/cluster.server.certificate.pfx"
 		err = upload(conn, stdoutBuf, "/etc/ravendb/cluster.server.certificate.pfx", sc.ClusterSetupZip[idx].Pfx)
 		if err != nil {
@@ -770,12 +780,17 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 		return "", err
 	}
 
-	err = sc.removeDatabases(store)
+	err = sc.deleteDatabases(store)
 	if err != nil {
 		return "", err
 	}
 
 	err = sc.createDatabases(store)
+	if err != nil {
+		return "", err
+	}
+
+	err = sc.deleteIndexes(store)
 	if err != nil {
 		return "", err
 	}
@@ -1046,11 +1061,24 @@ func (sc *ServerConfig) createIndexes(store *ravendb.DocumentStore) error {
 	return nil
 }
 
-func (sc *ServerConfig) removeDatabases(store *ravendb.DocumentStore) error {
+func (sc *ServerConfig) deleteDatabases(store *ravendb.DocumentStore) error {
 	for _, db := range sc.DatabasesToDelete {
 		err := deleteDatabase(store, db)
 		if err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (sc *ServerConfig) deleteIndexes(store *ravendb.DocumentStore) error {
+	for _, indexStruct := range sc.IndexesToDelete {
+		for _, indexName := range indexStruct.IndexesNames {
+			operation := ravendb.NewDeleteIndexOperation(indexName)
+			err := store.Maintenance().ForDatabase(indexStruct.DatabaseName).Send(operation)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil

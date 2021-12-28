@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/spf13/cast"
 	"io/ioutil"
 	"net/http"
 	"path/filepath"
@@ -154,9 +155,37 @@ func resourceRavendbServer() *schema.Resource {
 					},
 				},
 			},
+			"indexes_to_delete": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"index": {
+							Type:     schema.TypeList,
+							Required: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"database_name": {
+										Type:     schema.TypeString,
+										Required: true,
+									},
+									"indexes_names": {
+										Type:     schema.TypeList,
+										Required: true,
+										Elem: &schema.Schema{
+											Type: schema.TypeString,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			"databases_to_delete": {
 				Type:     schema.TypeSet,
 				Optional: true,
+				MaxItems: 1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"database": {
@@ -185,7 +214,7 @@ func resourceRavendbServer() *schema.Resource {
 					Schema: map[string]*schema.Schema{
 						"database": {
 							Type:     schema.TypeList,
-							Required: true, // equals to - at least one block is required
+							Required: true, 
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									"name": {
@@ -308,6 +337,33 @@ func resourceRavendbServer() *schema.Resource {
 						"failed": {
 							Type:     schema.TypeBool,
 							Computed: true,
+						},
+						"indexes_to_delete": {
+							Type:     schema.TypeSet,
+							Computed: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"index": {
+										Type:     schema.TypeList,
+										Computed: true,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"database_name": {
+													Type:     schema.TypeString,
+													Computed: true,
+												},
+												"indexes_names": {
+													Type:     schema.TypeList,
+													Computed: true,
+													Elem: &schema.Schema{
+														Type: schema.TypeString,
+													},
+												},
+											},
+										},
+									},
+								},
+							},
 						},
 						"databases_to_delete": {
 							Type:     schema.TypeSet,
@@ -435,7 +491,7 @@ func resourceServerDelete(ctx context.Context, d *schema.ResourceData, meta inte
 }
 
 func convertNode(node NodeState, index int) (map[string]interface{}, error) {
-	idx := string(index + 'A')
+	idx := string(rune(index + 'A'))
 
 	convertCert, err := node.ClusterSetupZip[idx].String()
 	if err != nil {
@@ -451,11 +507,27 @@ func convertNode(node NodeState, index int) (map[string]interface{}, error) {
 		"tcp_url":             node.TcpUrl,
 		"databases":           flattenDatabases(node.Databases),
 		"databases_to_delete": flattenDatabasesToDelete(node.DatabasesToDelete),
+		"indexes_to_delete":   flattenIndexesToDelete(node.IndexesToDelete),
 		"assets":              node.Assets,
 		"unsecured":           node.Unsecured,
 		"version":             node.Version,
 		"failed":              node.Failed,
 	}, nil
+}
+func flattenIndexesToDelete(indexesToDelete []IndexesToDelete) []map[string]interface{} {
+	tfs := make([]map[string]interface{}, 0)
+	for _, v := range indexesToDelete {
+		tf := map[string]interface{}{
+			"index": []map[string]interface{}{
+				{
+					"database_name": v.DatabaseName,
+					"indexes_names": v.IndexesNames,
+				},
+			},
+		}
+		tfs = append(tfs, tf)
+	}
+	return tfs
 }
 
 func (sc CertificateHolder) String() (string, error) {
@@ -565,100 +637,133 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		} else {
 			sc.Url.TcpPort = value["tcp_port"].(int)
 		}
+	}
 
-		databasesToDeleteList := d.Get("databases_to_delete").(*schema.Set).List()
-		sc.DatabasesToDelete = []DatabaseToDelete{}
-		for _, database := range databasesToDeleteList {
-			val := database.(map[string]interface{})
+	databasesToDeleteList := d.Get("databases_to_delete").(*schema.Set).List()
+	sc.DatabasesToDelete, err = parseDatabasesToDelete(databasesToDeleteList)
+	if err != nil {
+		return sc, err
+	}
 
-			databases := val["database"].([]interface{})
-			for _, db := range databases {
-				val = db.(map[string]interface{})
-				name := val["name"].(string)
-				hardDelete := val["hard_delete"].(bool)
+	indexesToDeleteList := d.Get("indexes_to_delete").(*schema.Set).List()
+	sc.IndexesToDelete, err = parseIndexesToDelete(indexesToDeleteList)
+	if err != nil {
+		return sc, err
+	}
 
-				sc.DatabasesToDelete = append(sc.DatabasesToDelete, DatabaseToDelete{
-					Name:       name,
-					HardDelete: hardDelete,
-				})
-			}
-		}
-
-		databasesList := d.Get("databases").(*schema.Set).List()
-		sc.Databases = []Database{}
-		var replicationNodes []string
-		for _, v := range databasesList {
-			val := v.(map[string]interface{})
-
-			databases := val["database"].([]interface{})
-			for _, db := range databases {
-				val = db.(map[string]interface{})
-
-				name := val["name"].(string)
-
-				repNodes := val["replication_nodes"].([]interface{})
-				if len(repNodes) == 0 {
-					replicationNodes = append(replicationNodes, "A")
-				} else {
-					for _, node := range repNodes {
-						replicationNodes = append(replicationNodes, node.(string))
-					}
-				}
-
-				key := val["encryption_key"].(string)
-
-				settings = val["settings"].(map[string]interface{})
-				//workaround to convert unmarshalled map[string]interface{} values to string.
-				for key := range settings {
-					settings[key] = fmt.Sprintf("%v", settings[key])
-				}
-
-				database := Database{
-					Name:             name,
-					Settings:         settings,
-					ReplicationNodes: replicationNodes,
-					Key:              key,
-				}
-
-				indexesList := val["indexes"].([]interface{})
-				for _, index := range indexesList {
-					val := index.(map[string]interface{})
-
-					indexes := val["index"].(*schema.Set).List()
-					for _, index := range indexes {
-						val = index.(map[string]interface{})
-
-						indexName := val["index_name"].(string)
-						reduce := val["reduce"].(string)
-
-						maps := val["maps"].([]interface{})
-						mapsSlice := make([]string, len(maps))
-						for i, m := range maps {
-							mapsSlice[i] = m.(string)
-						}
-
-						configuration := val["configuration"].(map[string]interface{})
-						//workaround to convert unmarshalled map[string]interface{} values to string.
-						for key := range configuration {
-							configuration[key] = fmt.Sprintf("%v", configuration[key])
-						}
-
-						dbIndex := Index{
-							IndexName:     indexName,
-							Maps:          mapsSlice,
-							Reduce:        reduce,
-							Configuration: configuration,
-						}
-						database.Indexes = append(database.Indexes, dbIndex)
-						replicationNodes = nil
-					}
-				}
-				sc.Databases = append(sc.Databases, database)
-			}
-		}
+	databasesList := d.Get("databases").(*schema.Set).List()
+	sc.Databases, err = parseDatabases(databasesList)
+	if err != nil {
+		return sc, err
 	}
 
 	return sc, nil
+}
+
+func parseIndexesToDelete(indexesToDeleteList []interface{}) ([]IndexesToDelete, error) {
+	var indexesToDelete []IndexesToDelete
+
+	for _, index := range indexesToDeleteList {
+		val := cast.ToStringMap(index)
+
+		indexesSet, err := cast.ToSliceE(val["index"])
+		if err != nil {
+			return nil, err
+		}
+
+		for _, setVal := range indexesSet {
+			index := cast.ToStringMap(setVal)
+			dbName := cast.ToString(index["database_name"])
+			indexesNamesSlice := cast.ToStringSlice(index["indexes_names"])
+			indexesToDelete = append(indexesToDelete, IndexesToDelete{
+				DatabaseName: dbName,
+				IndexesNames: indexesNamesSlice,
+			})
+		}
+	}
+
+	return indexesToDelete, nil
+}
+
+func parseDatabasesToDelete(databasesToDeleteList []interface{}) ([]DatabaseToDelete, error) {
+	var databasesToDelete []DatabaseToDelete
+	for _, database := range databasesToDeleteList {
+		val := cast.ToStringMap(database)
+
+		databases, err := cast.ToSliceE(val["database"])
+		if err != nil {
+			return nil, err
+		}
+
+		for _, db := range databases {
+			val = cast.ToStringMap(db)
+			name := cast.ToString(val["name"])
+			hardDelete := cast.ToBool(val["hard_delete"])
+
+			databasesToDelete = append(databasesToDelete, DatabaseToDelete{
+				Name:       name,
+				HardDelete: hardDelete,
+			})
+		}
+	}
+	return databasesToDelete, nil
+}
+
+func parseDatabases(databasesList []interface{}) ([]Database, error) {
+	var databases []Database
+	for _, v := range databasesList {
+		val := cast.ToStringMap(v)
+		databasesSlice, err := cast.ToSliceE(val["database"])
+		if err != nil {
+			return nil, err
+		}
+
+		for _, db := range databasesSlice {
+			val = cast.ToStringMap(db)
+			name := cast.ToString(val["name"])
+			key := cast.ToString(val["encryption_key"])
+			databaseSettings := cast.ToStringMapString(val["settings"])
+
+			replicationNodes := cast.ToStringSlice(val["replication_nodes"])
+			if len(replicationNodes) == 0 {
+				replicationNodes[0] = "A"
+			}
+
+			database := Database{
+				Name:             name,
+				Settings:         databaseSettings,
+				ReplicationNodes: replicationNodes,
+				Key:              key,
+			}
+
+			indexesSlice, err := cast.ToSliceE(val["indexes"])
+			if err != nil {
+				return nil, err
+			}
+
+			for _, index := range indexesSlice {
+				val := cast.ToStringMap(index)
+				indexes := val["index"].(*schema.Set).List()
+				for _, index := range indexes {
+					val = cast.ToStringMap(index)
+					indexName := cast.ToString(val["index_name"])
+					reduce := cast.ToString(val["reduce"])
+					mapsSlice := cast.ToStringSlice(val["maps"])
+					configurationMap := cast.ToStringMapString(val["configuration"])
+
+					dbIndex := Index{
+						IndexName:     indexName,
+						Maps:          mapsSlice,
+						Reduce:        reduce,
+						Configuration: configurationMap,
+					}
+					database.Indexes = append(database.Indexes, dbIndex)
+				}
+			}
+			databases = append(databases, database)
+		}
+	}
+	return databases, nil
 }
 func OpenZipFile(sc ServerConfig, path string) (map[string]*CertificateHolder, error) {
 	var split []string
@@ -779,30 +884,6 @@ func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta interf
 	return nil
 }
 
-func stringValue(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
-func boolValue(b *bool) bool {
-	if b == nil {
-		return false
-	}
-	return *b
-}
-
-// stringMap converts a string map of interface{} values into a string
-func stringMap(src map[string]interface{}) map[string]string {
-	dst := make(map[string]string)
-	for k, val := range src {
-		v := val
-		dst[k] = v.(string)
-	}
-	return dst
-}
-
 func flattenDatabases(databases []Database) []map[string]interface{} {
 	tfs := make([]map[string]interface{}, 0)
 	for _, db := range databases {
@@ -810,7 +891,7 @@ func flattenDatabases(databases []Database) []map[string]interface{} {
 			"database": []map[string]interface{}{
 				{
 					"name":              db.Name,
-					"settings":          stringMap(db.Settings),
+					"settings":          db.Settings,
 					"replication_nodes": db.ReplicationNodes,
 					"indexes":           flattenIndexes(db.Indexes),
 				},
@@ -827,10 +908,10 @@ func flattenIndexes(indexes []Index) []map[string]interface{} {
 		tf := map[string]interface{}{
 			"index": []map[string]interface{}{
 				{
-					"index_name":     stringValue(&index.IndexName),
+					"index_name":    index.IndexName,
 					"maps":          index.Maps,
-					"reduce":        stringValue(&index.Reduce),
-					"configuration": stringMap(index.Configuration),
+					"reduce":        index.Reduce,
+					"configuration": index.Configuration,
 				},
 			},
 		}
@@ -846,8 +927,8 @@ func flattenDatabasesToDelete(databasesToDelete []DatabaseToDelete) []map[string
 		tf := map[string]interface{}{
 			"database": []map[string]interface{}{
 				{
-					"name":        stringValue(&v.Name),
-					"hard_delete": boolValue(&v.HardDelete),
+					"name":        v.Name,
+					"hard_delete": v.HardDelete,
 				},
 			},
 		}
@@ -855,18 +936,6 @@ func flattenDatabasesToDelete(databasesToDelete []DatabaseToDelete) []map[string
 	}
 	return tfs
 }
-
-//func flattenDatabasesToDelete(databasesToDelete []DatabaseToDelete) []map[string]interface{} {
-//	tfs := make([]map[string]interface{}, 0)
-//	for _, v := range databasesToDelete {
-//		tf := map[string]interface{}{
-//			"name":        stringValue(&v.Name),
-//			"hard_delete": boolValue(&v.HardDelete),
-//		}
-//		tfs = append(tfs, tf)
-//	}
-//	return tfs
-//}
 
 func readRavenDbInstances(sc ServerConfig) ([]NodeState, error) {
 	var wg sync.WaitGroup
