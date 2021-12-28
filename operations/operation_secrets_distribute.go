@@ -9,9 +9,9 @@ import (
 )
 
 type OperationDistributeSecretKey struct {
-	Name string `json:"Name"`
-	Node string `json:"Node"`
-	Key  string `json:"Key"`
+	Name  string   `json:"Name"`
+	Nodes []string `json:"Nodes"`
+	Key   string   `json:"Key"`
 }
 
 func (operation *OperationDistributeSecretKey) GetCommand(conventions *ravendb.DocumentConventions) (ravendb.RavenCommand, error) {
@@ -33,12 +33,18 @@ func (o *operationDistributeSecretKey) CreateRequest(node *ravendb.ServerNode) (
 	if err != nil {
 		return nil, err
 	}
+
 	params := url.Values{}
+
 	params.Add("name", o.parent.Name)
-	params.Add("node", o.parent.Node)
+	for _, node := range o.parent.Nodes {
+		params.Add("node", node)
+	}
+
 	base.RawQuery = params.Encode()
 
 	keyBytes := []byte(o.parent.Key)
+
 	return http.NewRequest(http.MethodPost, base.String(), bytes.NewBuffer(keyBytes))
 }
 

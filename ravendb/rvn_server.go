@@ -12,6 +12,7 @@ import (
 	"github.com/ravendb/ravendb-go-client"
 	"github.com/ravendb/ravendb-go-client/serverwide/certificates"
 	"github.com/ravendb/ravendb-go-client/serverwide/operations"
+	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
 	"golang.org/x/crypto/ssh"
 	"log"
 	"net"
@@ -37,70 +38,76 @@ const (
 )
 
 type ServerConfig struct {
-	Package             Package
-	Hosts               []string
-	License             []byte
-	Settings            map[string]interface{}
-	ClusterSetupZip     map[string]*CertificateHolder
-	Url                 Url
-	Assets              map[string][]byte
-	Unsecured           bool
-	SSH                 SSH
-	HealthcheckDatabase string
-	Databases           []Database
+	Package             Package                       `json:"Package"`
+	Hosts               []string                      `json:"Hosts,omitempty"`
+	License             []byte                        `json:"License,omitempty"`
+	Settings            map[string]interface{}        `json:"Settings,omitempty"`
+	ClusterSetupZip     map[string]*CertificateHolder `json:"ClusterSetupZip,omitempty"`
+	Url                 Url                           `json:"Url"`
+	Assets              map[string][]byte             `json:"Assets,omitempty"`
+	Unsecured           bool                          `json:"Unsecured,omitempty"`
+	SSH                 SSH                           `json:"SSH"`
+	HealthcheckDatabase string                        `json:"HealthcheckDatabase,omitempty"`
+	Databases           []Database                    `json:"Databases,omitempty"`
+	DatabasesToDelete   []DatabaseToDelete            `json:"DatabasesToDelete,omitempty"`
 }
 
 type CertificateHolder struct {
-	Pfx  []byte `json:"pfx"`
-	Cert []byte `json:"cert"`
-	Key  []byte `json:"key"`
+	Pfx  []byte `json:"Pfx,omitempty"`
+	Cert []byte `json:"Cert,omitempty"`
+	Key  []byte `json:"Key,omitempty"`
 }
 
 type NodeState struct {
-	Host            string
-	Licence         []byte
-	Settings        map[string]interface{}
-	ClusterSetupZip map[string]CertificateHolder
-	HttpUrl         string
-	TcpUrl          string
-	Assets          map[string][]byte
-	Unsecured       bool
-	Version         string
-	Failed          bool
-	Databases       []Database
+	Host              string                       `json:"Host,omitempty"`
+	Licence           []byte                       `json:"Licence,omitempty"`
+	Settings          map[string]interface{}       `json:"Settings,omitempty"`
+	ClusterSetupZip   map[string]CertificateHolder `json:"ClusterSetupZip,omitempty"`
+	HttpUrl           string                       `json:"HttpUrl,omitempty"`
+	TcpUrl            string                       `json:"TcpUrl,omitempty"`
+	Assets            map[string][]byte            `json:"Assets,omitempty"`
+	Unsecured         bool                         `json:"Unsecured,omitempty"`
+	Version           string                       `json:"Version,omitempty"`
+	Failed            bool                         `json:"Failed,omitempty"`
+	Databases         []Database                   `json:"Databases,omitempty"`
+	DatabasesToDelete []DatabaseToDelete           `json:"DatabasesToDelete,omitempty"`
+}
+
+type DatabaseToDelete struct {
+	Name       string `json:"Name,omitempty"`
+	HardDelete bool   `json:"HardDelete,omitempty"`
 }
 
 type Database struct {
-	Name              string
-	Settings          map[string]interface{}
-	ReplicationFactor int
-	HardDelete        bool
-	Key               string
-	Indexes           []Index
+	Name             string                 `json:"Name,omitempty"`
+	Settings         map[string]interface{} `json:"Settings,omitempty"`
+	ReplicationNodes []string               `json:"ReplicationNodes,omitempty"`
+	Key              string                 `json:"Key,omitempty"`
+	Indexes          []Index                `json:"Indexes,omitempty"`
 }
 
 type Index struct {
-	IndexName     string
-	Maps          []interface{}
-	Reduce        string
-	Configuration map[string]interface{}
+	IndexName     string                 `json:"IndexName,omitempty"`
+	Maps          []string               `json:"Maps,omitempty"`
+	Reduce        string                 `json:"Reduce,omitempty"`
+	Configuration map[string]interface{} `json:"Configuration,omitempty"`
 }
 
 type Package struct {
-	Version string
-	Arch    string
+	Version string `json:"Version,omitempty"`
+	Arch    string `json:"Arch,omitempty"`
 }
 
 type Url struct {
-	List     []string
-	HttpPort int
-	TcpPort  int
+	List     []string `json:"List,omitempty"`
+	HttpPort int      `json:"HttpPort,omitempty"`
+	TcpPort  int      `json:"TcpPort,omitempty"`
 }
 
 type SSH struct {
-	User string
-	Pem  []byte
-	Port int
+	User string `json:"User,omitempty"`
+	Pem  []byte `json:"Pem,omitempty"`
+	Port int    `json:"Port,omitempty"`
 }
 
 func (s *SSH) getPort() int {
@@ -341,9 +348,31 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 	delete(ns.Settings, "PublicServerUrl.Tcp")
 	delete(ns.Settings, "Security.UnsecuredAccessAllowed")
 
+	ns.DatabasesToDelete = []DatabaseToDelete{}
+	if sc.DatabasesToDelete != nil {
+		for _, database := range sc.DatabasesToDelete {
+			ns.DatabasesToDelete = append(ns.DatabasesToDelete, DatabaseToDelete{
+				Name:       database.Name,
+				HardDelete: database.HardDelete,
+			})
+		}
+	}
+
+	ns.Databases = []Database{}
+	if sc.Databases != nil {
+		for _, database := range sc.Databases {
+			ns.Databases = append(ns.Databases, Database{
+				//we want to avoid saving encryption key
+				Name:             database.Name,
+				Settings:         database.Settings,
+				ReplicationNodes: database.ReplicationNodes,
+				Indexes:          database.Indexes,
+			})
+		}
+	}
+
 	return ns, nil
 }
-
 func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	var stdoutBuf bytes.Buffer
 	var conn *ssh.Client
@@ -676,10 +705,11 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 	var certHolder CertificateHolder
 	var permissions map[string]string
 	var err error
-	//err := sc.deployRavenDbInstances(parallel)
-	//if err != nil {
-	//	return "", err
-	//}
+
+	err = sc.deployRavenDbInstances(parallel)
+	if err != nil {
+		return "", err
+	}
 
 	if sc.Unsecured == false {
 		certHolder, err = sc.ConvertPfx()
@@ -693,12 +723,7 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 		return "", err
 	}
 
-	//err = sc.addNodesToCluster(store)
-	//if err != nil {
-	//	return "", err
-	//}
-
-	err = sc.filterDatabaseOperation(store, certHolder)
+	err = sc.addNodesToCluster(store)
 	if err != nil {
 		return "", err
 	}
@@ -734,7 +759,10 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 
 	err = sc.getDatabaseHealthCheck(store)
 	if errors.As(err, &databaseDoesNotExistError) {
-		err = sc.createDb(store)
+		err = sc.createDatabase(store, &ravendb.DatabaseRecord{
+			DatabaseName: sc.HealthcheckDatabase,
+			Encrypted:    false,
+		}, len(sc.Hosts))
 		if err != nil {
 			return "", err
 		}
@@ -742,9 +770,55 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 		return "", err
 	}
 
+	err = sc.removeDatabases(store)
+	if err != nil {
+		return "", err
+	}
+
+	err = sc.createDatabases(store)
+	if err != nil {
+		return "", err
+	}
+
+	err = sc.createIndexes(store)
+	if err != nil {
+		return "", err
+	}
+
 	defer store.Close()
 
 	return clusterTopology.Topology.TopologyID, nil
+}
+
+func (sc *ServerConfig) createDatabases(store *ravendb.DocumentStore) error {
+	var err error
+	for _, dbStruct := range sc.Databases {
+		if len(strings.TrimSpace(dbStruct.Key)) != 0 {
+			err = distributeSecretKey(store, dbStruct)
+			if err != nil {
+				return err
+			}
+			err = sc.createDatabase(store, &ravendb.DatabaseRecord{
+				DatabaseName: dbStruct.Name,
+				Settings:     dbStruct.convertSettings(),
+				Encrypted:    true,
+			}, len(dbStruct.ReplicationNodes))
+			if err != nil {
+				return err
+			}
+
+		} else {
+			err = sc.createDatabase(store, &ravendb.DatabaseRecord{
+				DatabaseName: dbStruct.Name,
+				Settings:     dbStruct.convertSettings(),
+				Encrypted:    false,
+			}, len(dbStruct.ReplicationNodes))
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (sc *ServerConfig) getDbPermissionsAndAdminCertHolder() (CertificateHolder, map[string]string, error) {
@@ -934,7 +1008,7 @@ func (sc *ServerConfig) RemoveRavenDbInstances() diag.Diagnostics {
 
 }
 
-func (sc *ServerConfig) createDb(store *ravendb.DocumentStore) error {
+func (sc *ServerConfig) createDatabase(store *ravendb.DocumentStore, dbRecord *ravendb.DatabaseRecord, repFactor int) error {
 	for i := 0; i < NUMBER_OF_RETRIES; i++ {
 		topology, err := sc.getClusterTopology(store)
 		if err != nil {
@@ -946,10 +1020,7 @@ func (sc *ServerConfig) createDb(store *ravendb.DocumentStore) error {
 			break
 		}
 	}
-	err := executeWithRetries(store,
-		ravendb.NewCreateDatabaseOperation(&ravendb.DatabaseRecord{
-			DatabaseName: sc.HealthcheckDatabase,
-		}, len(sc.Hosts)))
+	err := executeWithRetries(store, ravendb.NewCreateDatabaseOperation(dbRecord, repFactor))
 
 	if err != nil && reflect.TypeOf(err) != reflect.TypeOf(&ravendb.ConcurrencyError{}) {
 		return err
@@ -957,131 +1028,55 @@ func (sc *ServerConfig) createDb(store *ravendb.DocumentStore) error {
 	return nil
 }
 
-func (sc *ServerConfig) filterDatabaseOperation(store *ravendb.DocumentStore, holder CertificateHolder) error {
-	var err error
-	for _, dbStruct := range sc.Databases {
-		hardDeleteIsNil := reflect.ValueOf(&dbStruct.HardDelete).IsNil()
-		idxIsNil := reflect.ValueOf(&dbStruct.Indexes).IsNil()
-
-		if hardDeleteIsNil != true {
-			err = deleteDatabase(store, dbStruct)
+func (sc *ServerConfig) createIndexes(store *ravendb.DocumentStore) error {
+	for _, database := range sc.Databases {
+		for _, idx := range database.Indexes {
+			indexName := idx.IndexName
+			index := ravendb.NewIndexCreationTask(indexName)
+			for _, m := range idx.Maps {
+				index.Maps = append(index.Maps, m)
+			}
+			index.Reduce = idx.Reduce
+			err := index.Execute(store, store.GetConventions(), database.Name)
 			if err != nil {
 				return err
-			}
-		} else {
-			err = putSecretKeyInCluster(sc, store, dbStruct)
-			err = createDatabase(sc, store, dbStruct)
-			if err != nil {
-				return err
-			}
-			if idxIsNil == false {
-				err := createIndexes(store, dbStruct.Name, dbStruct.Indexes)
-				if err != nil {
-					return err
-				}
 			}
 		}
 	}
 	return nil
 }
 
-func putSecretKeyInCluster(sc *ServerConfig, store *ravendb.DocumentStore, dbStruct Database) error {
-	if len(strings.TrimSpace(dbStruct.Key)) != 0 {
-		if sc.Unsecured == false {
-			for _, node := range sc.Url.List {
-				command := ravendb.NewPutSecretKeyCommand(dbStruct.Name, dbStruct.Key, true)
-				requestExecutor := ravendb.ClusterRequestExecutorCreateForSingleNode(node, store.Certificate, store.TrustStore, store.GetConventions())
-				err := requestExecutor.ExecuteCommand(command, nil)
-				if err != nil {
-					return err
-				}
-			}
-		} else {
-			return errors.New("Database encryption is available on secured mode. ")
-		}
-	}
-	return nil
-}
-
-func createIndexes(store *ravendb.DocumentStore, databaseName string, indexes []Index) error {
-	for i, idx := range indexes {
-		indexName := idx.IndexName
-		index := ravendb.NewIndexCreationTask(indexName)
-		index.Map = idx.Maps[i].(string)
-		index.Reduce = idx.Reduce
-		err := index.Execute(store, store.GetConventions(), databaseName)
+func (sc *ServerConfig) removeDatabases(store *ravendb.DocumentStore) error {
+	for _, db := range sc.DatabasesToDelete {
+		err := deleteDatabase(store, db)
 		if err != nil {
 			return err
 		}
-		return nil
 	}
 	return nil
 }
 
-func deleteDatabase(store *ravendb.DocumentStore, dbStruct Database) error {
-	createDatabaseOperation := ravendb.NewDeleteDatabasesOperation(dbStruct.Name, dbStruct.HardDelete)
-	err := store.Maintenance().Server().Send(createDatabaseOperation)
+func distributeSecretKey(store *ravendb.DocumentStore, dbStruct Database) error {
+	operation := internal_operations.OperationDistributeSecretKey{
+		Name:  dbStruct.Name,
+		Nodes: dbStruct.ReplicationNodes,
+		Key:   dbStruct.Key,
+	}
+	err := executeWithRetries(store, &operation)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func createDatabase(sc *ServerConfig, store *ravendb.DocumentStore, dbStruct Database) error {
-	var dbRecord ravendb.DatabaseRecord
-
-	if sc.Unsecured == false {
-		dbRecord.Encrypted = true
-	}
-
-	dbRecord.DatabaseName = dbStruct.Name
-	dbRecord.Settings = dbStruct.convertSettings()
-
-	createDatabaseOperation := ravendb.NewCreateDatabaseOperation(&dbRecord, dbStruct.ReplicationFactor)
+func deleteDatabase(store *ravendb.DocumentStore, database DatabaseToDelete) error {
+	createDatabaseOperation := ravendb.NewDeleteDatabasesOperation(database.Name, database.HardDelete)
 	err := store.Maintenance().Server().Send(createDatabaseOperation)
 	if err != nil {
-		if _, ok := err.(*ravendb.ConcurrencyError); ok {
-			return errors.New("Database " + dbRecord.DatabaseName + " already exists.")
-		}
 		return err
 	}
 	return nil
 }
-
-//func createDatabase(store *ravendb.DocumentStore, dbStruct Database, unsecured bool) error {
-//	var dbRecord ravendb.DatabaseRecord
-//
-//	dbRecord.DatabaseName = dbStruct.Name
-//	dbRecord.Settings = dbStruct.convertSettings()
-//
-//	if len(strings.TrimSpace(dbStruct.Key)) != 0 {
-//		if unsecured == false {
-//			dbRecord.Encrypted = true
-//			operation := internal_operations.OperationDistributeSecretKey{
-//				Name: dbRecord.DatabaseName,
-//				Node: "A", // Will send the key to all the nodes
-//				Key:  dbStruct.Key,
-//			}
-//			err := executeWithRetries(store, &operation)
-//			if err != nil {
-//				return err
-//			}
-//		} else {
-//			return errors.New("Database encryption is available on secured mode only. ")
-//		}
-//
-//	}
-//
-//	createDatabaseOperation := ravendb.NewCreateDatabaseOperation(&dbRecord, dbStruct.ReplicationFactor)
-//	err := store.Maintenance().Server().Send(createDatabaseOperation)
-//	if err != nil {
-//		if _, ok := err.(*ravendb.ConcurrencyError); ok {
-//			return errors.New("Database " + dbRecord.DatabaseName + " already exists.")
-//		}
-//		return err
-//	}
-//	return nil
-//}
 
 func putCertificateInCluster(store *ravendb.DocumentStore, certificateName string, certificateBytes []byte, securityClearance string, permissions map[string]string) error {
 	return executeWithRetries(store, &certificates.OperationPutCertificate{

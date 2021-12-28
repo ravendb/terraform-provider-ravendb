@@ -154,6 +154,30 @@ func resourceRavendbServer() *schema.Resource {
 					},
 				},
 			},
+			"databases_to_delete": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"database": {
+							Type:     schema.TypeList,
+							Required: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"name": {
+										Type:     schema.TypeString,
+										Required: true,
+									},
+									"hard_delete": {
+										Type:     schema.TypeBool,
+										Optional: true,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			"databases": {
 				Type:     schema.TypeSet,
 				Optional: true,
@@ -161,14 +185,14 @@ func resourceRavendbServer() *schema.Resource {
 					Schema: map[string]*schema.Schema{
 						"database": {
 							Type:     schema.TypeList,
-							Required: true, // equals to at least one block is required
+							Required: true, // equals to - at least one block is required
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									"name": {
 										Type:     schema.TypeString,
 										Required: true,
 									},
-									"key": {
+									"encryption_key": {
 										Type:         schema.TypeString,
 										Optional:     true,
 										Sensitive:    true,
@@ -181,15 +205,12 @@ func resourceRavendbServer() *schema.Resource {
 											Type: schema.TypeString,
 										},
 									},
-									"hard_delete": {
-										Type:     schema.TypeBool,
-										Default:  false,
+									"replication_nodes": {
+										Type:     schema.TypeList,
 										Optional: true,
-									},
-									"replication_factor": {
-										Type:     schema.TypeInt,
-										Optional: true,
-										Default:  1,
+										Elem: &schema.Schema{
+											Type: schema.TypeString,
+										},
 									},
 									"indexes": {
 										Type:     schema.TypeList,
@@ -288,25 +309,43 @@ func resourceRavendbServer() *schema.Resource {
 							Type:     schema.TypeBool,
 							Computed: true,
 						},
-						"databases": {
+						"databases_to_delete": {
 							Type:     schema.TypeSet,
 							Computed: true,
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									"database": {
-										Type:     schema.TypeSet,
-										Required: true,
+										Type:     schema.TypeList,
+										Computed: true,
 										Elem: &schema.Resource{
 											Schema: map[string]*schema.Schema{
 												"name": {
 													Type:     schema.TypeString,
 													Computed: true,
 												},
-												"key": {
-													Type:         schema.TypeString,
-													Computed:     true,
-													Sensitive:    true,
-													ValidateFunc: validation.StringIsBase64,
+												"hard_delete": {
+													Type:     schema.TypeBool,
+													Computed: true,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"databases": {
+							Type:     schema.TypeSet,
+							Computed: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"database": {
+										Type:     schema.TypeList,
+										Computed: true,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"name": {
+													Type:     schema.TypeString,
+													Computed: true,
 												},
 												"settings": {
 													Type:     schema.TypeMap,
@@ -315,16 +354,15 @@ func resourceRavendbServer() *schema.Resource {
 														Type: schema.TypeString,
 													},
 												},
-												"hard_delete": {
-													Type:     schema.TypeBool,
+												"replication_nodes": {
+													Type:     schema.TypeList,
 													Computed: true,
-												},
-												"replication_factor": {
-													Type:     schema.TypeInt,
-													Computed: true,
+													Elem: &schema.Schema{
+														Type: schema.TypeString,
+													},
 												},
 												"indexes": {
-													Type:     schema.TypeSet,
+													Type:     schema.TypeList,
 													Computed: true,
 													Elem: &schema.Resource{
 														Schema: map[string]*schema.Schema{
@@ -345,8 +383,8 @@ func resourceRavendbServer() *schema.Resource {
 																			},
 																		},
 																		"reduce": {
-																			Type:     schema.TypeString,
 																			Computed: true,
+																			Type:     schema.TypeString,
 																		},
 																		"configuration": {
 																			Type:     schema.TypeMap,
@@ -373,7 +411,6 @@ func resourceRavendbServer() *schema.Resource {
 		},
 	}
 }
-
 func resourceServerCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	sc, err := parseData(d)
 	if err != nil {
@@ -400,41 +437,29 @@ func resourceServerDelete(ctx context.Context, d *schema.ResourceData, meta inte
 func convertNode(node NodeState, index int) (map[string]interface{}, error) {
 	idx := string(index + 'A')
 
-	convertDatabases, err := convertDatabasesToString(node.Databases)
-	if err != nil {
-		return nil, err
-	}
-
 	convertCert, err := node.ClusterSetupZip[idx].String()
 	if err != nil {
 		return nil, err
 	}
 
 	return map[string]interface{}{
-		"host":               node.Host,
-		"license":            base64.StdEncoding.EncodeToString(node.Licence),
-		"settings":           node.Settings,
-		"certificate_holder": convertCert,
-		"http_url":           node.HttpUrl,
-		"tcp_url":            node.TcpUrl,
-		"databases":          convertDatabases,
-		"assets":             node.Assets,
-		"unsecured":          node.Unsecured,
-		"version":            node.Version,
-		"failed":             node.Failed,
+		"host":                node.Host,
+		"license":             base64.StdEncoding.EncodeToString(node.Licence),
+		"settings":            node.Settings,
+		"certificate_holder":  convertCert,
+		"http_url":            node.HttpUrl,
+		"tcp_url":             node.TcpUrl,
+		"databases":           flattenDatabases(node.Databases),
+		"databases_to_delete": flattenDatabasesToDelete(node.DatabasesToDelete),
+		"assets":              node.Assets,
+		"unsecured":           node.Unsecured,
+		"version":             node.Version,
+		"failed":              node.Failed,
 	}, nil
 }
 
-func convertDatabasesToString(dbs []Database) (string, error) {
-	out, err := json.Marshal(dbs)
-	if err != nil {
-		return "", nil
-	}
-	return string(out), nil
-}
-
 func (sc CertificateHolder) String() (string, error) {
-	out, err := json.Marshal(sc)
+	out, err := json.MarshalIndent(sc, "", "\t")
 	if err != nil {
 		return "", nil
 	}
@@ -541,8 +566,27 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 			sc.Url.TcpPort = value["tcp_port"].(int)
 		}
 
+		databasesToDeleteList := d.Get("databases_to_delete").(*schema.Set).List()
+		sc.DatabasesToDelete = []DatabaseToDelete{}
+		for _, database := range databasesToDeleteList {
+			val := database.(map[string]interface{})
+
+			databases := val["database"].([]interface{})
+			for _, db := range databases {
+				val = db.(map[string]interface{})
+				name := val["name"].(string)
+				hardDelete := val["hard_delete"].(bool)
+
+				sc.DatabasesToDelete = append(sc.DatabasesToDelete, DatabaseToDelete{
+					Name:       name,
+					HardDelete: hardDelete,
+				})
+			}
+		}
+
 		databasesList := d.Get("databases").(*schema.Set).List()
-		sc.Databases = make([]Database, 0)
+		sc.Databases = []Database{}
+		var replicationNodes []string
 		for _, v := range databasesList {
 			val := v.(map[string]interface{})
 
@@ -551,18 +595,29 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 				val = db.(map[string]interface{})
 
 				name := val["name"].(string)
-				repFactor := val["replication_factor"].(int)
-				hardDelete := val["hard_delete"].(bool)
-				key := val["key"].(string)
+
+				repNodes := val["replication_nodes"].([]interface{})
+				if len(repNodes) == 0 {
+					replicationNodes = append(replicationNodes, "A")
+				} else {
+					for _, node := range repNodes {
+						replicationNodes = append(replicationNodes, node.(string))
+					}
+				}
+
+				key := val["encryption_key"].(string)
 
 				settings = val["settings"].(map[string]interface{})
+				//workaround to convert unmarshalled map[string]interface{} values to string.
+				for key := range settings {
+					settings[key] = fmt.Sprintf("%v", settings[key])
+				}
 
 				database := Database{
-					Name:              name,
-					Settings:          settings,
-					ReplicationFactor: repFactor,
-					Key:               key,
-					HardDelete:        hardDelete,
+					Name:             name,
+					Settings:         settings,
+					ReplicationNodes: replicationNodes,
+					Key:              key,
 				}
 
 				indexesList := val["indexes"].([]interface{})
@@ -575,16 +630,27 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 
 						indexName := val["index_name"].(string)
 						reduce := val["reduce"].(string)
+
 						maps := val["maps"].([]interface{})
+						mapsSlice := make([]string, len(maps))
+						for i, m := range maps {
+							mapsSlice[i] = m.(string)
+						}
+
 						configuration := val["configuration"].(map[string]interface{})
+						//workaround to convert unmarshalled map[string]interface{} values to string.
+						for key := range configuration {
+							configuration[key] = fmt.Sprintf("%v", configuration[key])
+						}
 
 						dbIndex := Index{
 							IndexName:     indexName,
-							Maps:          maps,
+							Maps:          mapsSlice,
 							Reduce:        reduce,
 							Configuration: configuration,
 						}
 						database.Indexes = append(database.Indexes, dbIndex)
+						replicationNodes = nil
 					}
 				}
 				sc.Databases = append(sc.Databases, database)
@@ -712,6 +778,95 @@ func resourceServerRead(ctx context.Context, d *schema.ResourceData, meta interf
 
 	return nil
 }
+
+func stringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func boolValue(b *bool) bool {
+	if b == nil {
+		return false
+	}
+	return *b
+}
+
+// stringMap converts a string map of interface{} values into a string
+func stringMap(src map[string]interface{}) map[string]string {
+	dst := make(map[string]string)
+	for k, val := range src {
+		v := val
+		dst[k] = v.(string)
+	}
+	return dst
+}
+
+func flattenDatabases(databases []Database) []map[string]interface{} {
+	tfs := make([]map[string]interface{}, 0)
+	for _, db := range databases {
+		tf := map[string]interface{}{
+			"database": []map[string]interface{}{
+				{
+					"name":              db.Name,
+					"settings":          stringMap(db.Settings),
+					"replication_nodes": db.ReplicationNodes,
+					"indexes":           flattenIndexes(db.Indexes),
+				},
+			},
+		}
+		tfs = append(tfs, tf)
+	}
+	return tfs
+}
+
+func flattenIndexes(indexes []Index) []map[string]interface{} {
+	tfs := make([]map[string]interface{}, 0)
+	for _, index := range indexes {
+		tf := map[string]interface{}{
+			"index": []map[string]interface{}{
+				{
+					"index_name":     stringValue(&index.IndexName),
+					"maps":          index.Maps,
+					"reduce":        stringValue(&index.Reduce),
+					"configuration": stringMap(index.Configuration),
+				},
+			},
+		}
+		tfs = append(tfs, tf)
+	}
+
+	return tfs
+}
+
+func flattenDatabasesToDelete(databasesToDelete []DatabaseToDelete) []map[string]interface{} {
+	tfs := make([]map[string]interface{}, 0)
+	for _, v := range databasesToDelete {
+		tf := map[string]interface{}{
+			"database": []map[string]interface{}{
+				{
+					"name":        stringValue(&v.Name),
+					"hard_delete": boolValue(&v.HardDelete),
+				},
+			},
+		}
+		tfs = append(tfs, tf)
+	}
+	return tfs
+}
+
+//func flattenDatabasesToDelete(databasesToDelete []DatabaseToDelete) []map[string]interface{} {
+//	tfs := make([]map[string]interface{}, 0)
+//	for _, v := range databasesToDelete {
+//		tf := map[string]interface{}{
+//			"name":        stringValue(&v.Name),
+//			"hard_delete": boolValue(&v.HardDelete),
+//		}
+//		tfs = append(tfs, tf)
+//	}
+//	return tfs
+//}
 
 func readRavenDbInstances(sc ServerConfig) ([]NodeState, error) {
 	var wg sync.WaitGroup
