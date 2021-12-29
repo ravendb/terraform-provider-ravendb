@@ -3,6 +3,7 @@ package ravendb
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -43,7 +44,7 @@ func resourceRavendbServer() *schema.Resource {
 			"hosts": {
 				Type:        schema.TypeList,
 				Required:    true,
-				Description: "The hostnames (or ip addresses) of the nodes that terraform will use to setup the RavenDB cluster.",
+				Description: "The hostnames (or ip addresses) of the nodes that terraform will use to setup the RavenDB cluster",
 				Elem: &schema.Schema{
 					Type:         schema.TypeString,
 					ValidateFunc: validation.IsIPAddress,
@@ -53,31 +54,32 @@ func resourceRavendbServer() *schema.Resource {
 			"database": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Description: "The database name to check whether he is alive or not.",
+				Description: "The database name to check whether he is alive or not",
 			},
 			"cluster_setup_zip": {
 				Type:         schema.TypeString,
 				Optional:     true,
-				Description:  "This zip file path generated from either RavenDB setup wizard or from RavenDB RVN tool.",
+				Description:  "This zip file path generated from either RavenDB setup wizard or from RavenDB RVN tool",
 				ValidateFunc: validation.StringIsNotEmpty,
 			},
 			"license": {
 				Type:         schema.TypeString,
 				Sensitive:    true,
 				Required:     true,
-				Description:  "The license that will be used for the setup of the RavenDB cluster.",
+				Description:  "The license that will be used for the setup of the RavenDB cluster",
 				ValidateFunc: validation.StringIsBase64,
 			},
 			"package": {
-				Type:     schema.TypeSet,
-				Required: true,
-				MaxItems: 1,
+				Type:        schema.TypeSet,
+				Required:    true,
+				MaxItems:    1,
+				Description: "The RavenDB download package set",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"version": {
 							Type:        schema.TypeString,
 							Required:    true,
-							Description: "The RavenDB version to use for the cluster.",
+							Description: "The RavenDB version to use for the cluster",
 						},
 						"arch": {
 							Type:        schema.TypeString,
@@ -93,9 +95,10 @@ func resourceRavendbServer() *schema.Resource {
 				Description: "Whatever to allow to run RavenDB in unsecured mode. This is ***NOT*** recommended!",
 			},
 			"url": {
-				Type:     schema.TypeSet,
-				Required: true,
-				MaxItems: 1,
+				Type:        schema.TypeSet,
+				Required:    true,
+				MaxItems:    1,
+				Description: "Nodes to deploy",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"list": {
@@ -121,24 +124,27 @@ func resourceRavendbServer() *schema.Resource {
 				},
 			},
 			"settings_override": {
-				Type:     schema.TypeMap,
-				Optional: true,
+				Type:        schema.TypeMap,
+				Optional:    true,
+				Description: "Overriding the settings.json file",
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},
 			},
 			"assets": {
-				Type:     schema.TypeMap,
-				Optional: true,
+				Type:        schema.TypeMap,
+				Optional:    true,
+				Description: "Upload files to an absolute path",
 				Elem: &schema.Schema{
 					Type:         schema.TypeString,
 					ValidateFunc: validation.StringIsBase64,
 				},
 			},
 			"ssh": {
-				Type:     schema.TypeSet,
-				Required: true,
-				MaxItems: 1,
+				Type:        schema.TypeSet,
+				Required:    true,
+				MaxItems:    1,
+				Description: "Connection credentials needed to SSH to the machines",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"user": {
@@ -156,8 +162,9 @@ func resourceRavendbServer() *schema.Resource {
 				},
 			},
 			"indexes_to_delete": {
-				Type:     schema.TypeSet,
-				Optional: true,
+				Type:        schema.TypeSet,
+				Optional:    true,
+				Description: "Indexes that will be deleted on a given database",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"index": {
@@ -183,9 +190,10 @@ func resourceRavendbServer() *schema.Resource {
 				},
 			},
 			"databases_to_delete": {
-				Type:     schema.TypeSet,
-				Optional: true,
-				MaxItems: 1,
+				Type:        schema.TypeSet,
+				Optional:    true,
+				MaxItems:    1,
+				Description: "Databases that will be hard/soft deleted",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"database": {
@@ -208,13 +216,14 @@ func resourceRavendbServer() *schema.Resource {
 				},
 			},
 			"databases": {
-				Type:     schema.TypeSet,
-				Optional: true,
+				Type:        schema.TypeSet,
+				Optional:    true,
+				Description: "Creation of databases and indexes",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"database": {
 							Type:     schema.TypeList,
-							Required: true, 
+							Required: true,
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									"name": {
@@ -223,20 +232,23 @@ func resourceRavendbServer() *schema.Resource {
 									},
 									"encryption_key": {
 										Type:         schema.TypeString,
+										Description:  "Encryption key for the database",
 										Optional:     true,
 										Sensitive:    true,
 										ValidateFunc: validation.StringIsBase64,
 									},
 									"settings": {
-										Type:     schema.TypeMap,
-										Optional: true,
+										Type:        schema.TypeMap,
+										Optional:    true,
+										Description: "Database Settings",
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
 										},
 									},
 									"replication_nodes": {
-										Type:     schema.TypeList,
-										Optional: true,
+										Type:        schema.TypeList,
+										Description: "The database will be created on these nodes",
+										Optional:    true,
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
 										},
@@ -400,6 +412,10 @@ func resourceRavendbServer() *schema.Resource {
 										Elem: &schema.Resource{
 											Schema: map[string]*schema.Schema{
 												"name": {
+													Type:     schema.TypeString,
+													Computed: true,
+												},
+												"encryption_key": {
 													Type:     schema.TypeString,
 													Computed: true,
 												},
@@ -765,6 +781,7 @@ func parseDatabases(databasesList []interface{}) ([]Database, error) {
 	}
 	return databases, nil
 }
+
 func OpenZipFile(sc ServerConfig, path string) (map[string]*CertificateHolder, error) {
 	var split []string
 	var zipStruct *CertificateHolder
@@ -893,6 +910,7 @@ func flattenDatabases(databases []Database) []map[string]interface{} {
 					"name":              db.Name,
 					"settings":          db.Settings,
 					"replication_nodes": db.ReplicationNodes,
+					"encryption_key":    generateHash256(db.Key),
 					"indexes":           flattenIndexes(db.Indexes),
 				},
 			},
@@ -900,6 +918,13 @@ func flattenDatabases(databases []Database) []map[string]interface{} {
 		tfs = append(tfs, tf)
 	}
 	return tfs
+}
+
+func generateHash256(encryptionKey string) string {
+	//FIPS 180-4 - https://csrc.nist.gov/publications/detail/fips/180/4/final
+	h := sha256.New()
+	h.Write([]byte(encryptionKey))
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func flattenIndexes(indexes []Index) []map[string]interface{} {

@@ -2,8 +2,6 @@ module github.com/ravendb/terraform-provider-ravendb
 
 go 1.17
 
-replace github.com/ravendb/ravendb-go-client => C:\Work\ravendb-go-client
-
 require (
 	github.com/gruntwork-io/terratest v0.38.2
 	github.com/hashicorp/go-multierror v1.1.1

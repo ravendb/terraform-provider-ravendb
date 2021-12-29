@@ -368,8 +368,8 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 	if sc.Databases != nil {
 		for _, database := range sc.Databases {
 			ns.Databases = append(ns.Databases, Database{
-				//we want to avoid saving encryption key
 				Name:             database.Name,
+				Key:              database.Key,
 				Settings:         database.Settings,
 				ReplicationNodes: database.ReplicationNodes,
 				Indexes:          database.Indexes,
