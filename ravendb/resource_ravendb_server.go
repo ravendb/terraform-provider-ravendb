@@ -579,7 +579,7 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 				return sc, err
 			}
 		} else {
-			return sc, fmt.Errorf("expected unsecure to be true. Setup ZIP file should be added when using secure mode")
+			return sc, fmt.Errorf("expected unsecured to be true. Setup ZIP file should be added when using secured mode. ")
 		}
 	}
 
@@ -655,22 +655,28 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		}
 	}
 
-	databasesToDeleteList := d.Get("databases_to_delete").(*schema.Set).List()
-	sc.DatabasesToDelete, err = parseDatabasesToDelete(databasesToDeleteList)
-	if err != nil {
-		return sc, err
+	if d.HasChange("databases_to_delete") {
+		databasesToDeleteList := d.Get("databases_to_delete").(*schema.Set).List()
+		sc.DatabasesToDelete, err = parseDatabasesToDelete(databasesToDeleteList)
+		if err != nil {
+			return sc, err
+		}
 	}
 
-	indexesToDeleteList := d.Get("indexes_to_delete").(*schema.Set).List()
-	sc.IndexesToDelete, err = parseIndexesToDelete(indexesToDeleteList)
-	if err != nil {
-		return sc, err
+	if d.HasChange("databases") {
+		indexesToDeleteList := d.Get("indexes_to_delete").(*schema.Set).List()
+		sc.IndexesToDelete, err = parseIndexesToDelete(indexesToDeleteList)
+		if err != nil {
+			return sc, err
+		}
 	}
 
-	databasesList := d.Get("databases").(*schema.Set).List()
-	sc.Databases, err = parseDatabases(databasesList)
-	if err != nil {
-		return sc, err
+	if d.HasChange("databases") {
+		databasesList := d.Get("databases").(*schema.Set).List()
+		sc.Databases, err = sc.parseDatabases(databasesList)
+		if err != nil {
+			return sc, err
+		}
 	}
 
 	return sc, nil
@@ -725,7 +731,7 @@ func parseDatabasesToDelete(databasesToDeleteList []interface{}) ([]DatabaseToDe
 	return databasesToDelete, nil
 }
 
-func parseDatabases(databasesList []interface{}) ([]Database, error) {
+func (sc *ServerConfig) parseDatabases(databasesList []interface{}) ([]Database, error) {
 	var databases []Database
 	for _, v := range databasesList {
 		val := cast.ToStringMap(v)
@@ -738,6 +744,11 @@ func parseDatabases(databasesList []interface{}) ([]Database, error) {
 			val = cast.ToStringMap(db)
 			name := cast.ToString(val["name"])
 			key := cast.ToString(val["encryption_key"])
+			if len(strings.TrimSpace(key)) != 0 && sc.Unsecured == true {
+				return nil, errors.New("encryption key can be used only in secured mode. ")
+			}
+			if sc.Unsecured == true {
+			}
 			databaseSettings := cast.ToStringMapString(val["settings"])
 
 			replicationNodes := cast.ToStringSlice(val["replication_nodes"])

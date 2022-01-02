@@ -499,8 +499,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	err = sc.execute(publicIP, []string{
 		"sudo chown ravendb:ravendb /etc/ravendb/license.json",
 		"sudo systemctl restart ravendb",
-		//"timeout 100 bash -c -- 'while ! curl -vvv -k " + httpUrl + "/setup/alive; do sleep 1; done'",
-		"timeout 100 bash -c -- 'while ! curl -vvv -k " + httpUrl + "/setup/alive; do echo \"Curl failed with exit code $?\"; sleep 1; done'",
+		"timeout 200 bash -c -- 'while ! curl -vvv -k " + httpUrl + "/setup/alive; do echo \"Curl failed with exit code $?\"; sleep 1; done'",
 	}, "sudo systemctl status ravendb", &stdoutBuf, conn)
 	if err != nil {
 		return err
@@ -808,27 +807,37 @@ func (sc *ServerConfig) Deploy(parallel bool) (string, error) {
 func (sc *ServerConfig) createDatabases(store *ravendb.DocumentStore) error {
 	var err error
 	for _, dbStruct := range sc.Databases {
+		databaseRecord := &ravendb.DatabaseRecord{
+			DatabaseName: dbStruct.Name,
+			Settings:     dbStruct.convertSettings(),
+			Encrypted:    true,
+			DatabaseTopology: &ravendb.DatabaseTopology{
+				Members:                  dbStruct.ReplicationNodes,
+				ReplicationFactor:        len(dbStruct.ReplicationNodes),
+				DynamicNodesDistribution: false,
+			},
+		}
 		if len(strings.TrimSpace(dbStruct.Key)) != 0 {
 			err = distributeSecretKey(store, dbStruct)
 			if err != nil {
 				return err
 			}
-			err = sc.createDatabase(store, &ravendb.DatabaseRecord{
-				DatabaseName: dbStruct.Name,
-				Settings:     dbStruct.convertSettings(),
-				Encrypted:    true,
-			}, len(dbStruct.ReplicationNodes))
-			if err != nil {
+
+			err = sc.createDatabase(store, databaseRecord, 0)
+			if err != nil && strings.Contains(err.Error(), "already exists!") {
+				err = sc.modifyDatabase(store, databaseRecord)
+			} else {
 				return err
 			}
-
 		} else {
-			err = sc.createDatabase(store, &ravendb.DatabaseRecord{
-				DatabaseName: dbStruct.Name,
-				Settings:     dbStruct.convertSettings(),
-				Encrypted:    false,
-			}, len(dbStruct.ReplicationNodes))
-			if err != nil {
+			databaseRecord.Encrypted = false
+			err = sc.createDatabase(store, databaseRecord, 0)
+			if err != nil && strings.Contains(err.Error(), "already exists!") {
+				err = sc.modifyDatabase(store, databaseRecord)
+				if err != nil {
+					return err
+				}
+			} else {
 				return err
 			}
 		}
@@ -909,7 +918,7 @@ func getStore(config *ServerConfig, certificateHolder CertificateHolder) (*raven
 func (sc *ServerConfig) addNodesToCluster(store *ravendb.DocumentStore) error {
 	clusterTopology, err := sc.getClusterTopology(store)
 	var errAllDown *ravendb.AllTopologyNodesDownError
-	if errors.As(err, &errAllDown) {
+	if errors.As(err, &errAllDown) || clusterTopology.CurrentState == "Passive" {
 		for i := 1; i < len(sc.Url.List); i++ {
 			err = addNodeToCluster(store, sc.Url.List[i])
 			if err != nil {
@@ -920,8 +929,13 @@ func (sc *ServerConfig) addNodesToCluster(store *ravendb.DocumentStore) error {
 		return err
 	}
 
+	clusterTopology, err = sc.getClusterTopology(store)
+	if err != nil {
+		return err
+	}
 	for nodeTag, nodeUrl := range clusterTopology.Topology.AllNodes {
-		if contains(sc.Url.List, nodeUrl) {
+		found, _ := contains(sc.Url.List, nodeUrl)
+		if found {
 			continue
 		} else {
 			parse, err := url.Parse(nodeUrl)
@@ -1035,10 +1049,51 @@ func (sc *ServerConfig) createDatabase(store *ravendb.DocumentStore, dbRecord *r
 			break
 		}
 	}
-	err := executeWithRetries(store, ravendb.NewCreateDatabaseOperation(dbRecord, repFactor))
-
-	if err != nil && reflect.TypeOf(err) != reflect.TypeOf(&ravendb.ConcurrencyError{}) {
+	operation := ravendb.NewCreateDatabaseOperation(dbRecord, repFactor)
+	err := executeWithRetries(store, operation)
+	if err != nil && strings.Contains(err.Error(), "already exists!") {
 		return err
+	} else if err != nil && reflect.TypeOf(err) != reflect.TypeOf(&ravendb.ConcurrencyError{}) {
+		return err
+	}
+
+	return nil
+}
+
+func (sc *ServerConfig) modifyDatabase(store *ravendb.DocumentStore, dbRecord *ravendb.DatabaseRecord) error {
+	var rmDbInTags, members []string
+	command := ravendb.NewGetDatabaseTopologyCommand()
+	err := store.GetRequestExecutor(dbRecord.DatabaseName).ExecuteCommand(command, nil)
+	result := command.Result
+	if result != nil {
+		members = dbRecord.DatabaseTopology.Members
+		for _, serverNode := range result.Nodes {
+			tag := serverNode.ClusterTag
+			found, index := contains(members, tag)
+			if found == false {
+				rmDbInTags = append(rmDbInTags, tag)
+			} else {
+				members = append(members[:index], members[index+1:]...)
+			}
+		}
+		if rmDbInTags != nil {
+			operation := ravendb.NewDeleteDatabasesOperationWithParameters(&ravendb.DeleteDatabaseParameters{
+				DatabaseNames:             []string{dbRecord.DatabaseName},
+				HardDelete:                true,
+				FromNodes:                 rmDbInTags,
+				TimeToWaitForConfirmation: nil,
+			})
+			err = executeWithRetries(store, operation)
+			if err != nil {
+				return err
+			}
+		}
+		err = sc.addDatabaseNode(store, dbRecord.DatabaseName, members)
+		if err != nil {
+			return err
+		}
+	} else {
+		return errors.New("Unable to retrieve topology for database: " + dbRecord.DatabaseName)
 	}
 	return nil
 }
@@ -1081,6 +1136,21 @@ func (sc *ServerConfig) deleteIndexes(store *ravendb.DocumentStore) error {
 			}
 		}
 	}
+	return nil
+}
+
+func (sc *ServerConfig) addDatabaseNode(store *ravendb.DocumentStore, databaseName string, nodes []string) error {
+	for _, node := range nodes {
+		operation := internal_operations.OperationAddDatabaseNode{
+			Name: databaseName,
+			Node: node,
+		}
+		err := executeWithRetries(store, &operation)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -1187,13 +1257,13 @@ func readFileContents(path string, stdoutBuf bytes.Buffer, conn *ssh.Client) ([]
 	return out, nil
 }
 
-func contains(s []string, str string) bool {
-	for _, v := range s {
-		if strings.ToLower(v) == str {
-			return true
+func contains(s []string, str string) (bool, int) {
+	for i, v := range s {
+		if strings.ToUpper(v) == strings.ToUpper(str) {
+			return true, i
 		}
 	}
-	return false
+	return false, -1
 }
 
 func containsValue(m map[string]string, v string) bool {

@@ -17,9 +17,9 @@ If you have any questions, or need further assistance, you can [contact us direc
 
 ## Providers
 
-| Name | Version |
-|------|---------|
-|ravendb|1.0.1
+| Name    | Version |
+|---------|---------|
+| ravendb | 1.0.1   |
 
 ## Sample usage
 
@@ -66,7 +66,37 @@ locals {
   
   # This samples represents the nodes that will be used for secure setup.
   ravendb_nodes_urls = [for tag in local.nodes : "https://${tag}.omermichleviz.development.run"]
-    
+  
+  # This smaples shows the usage of map reduce parameters to a given index.
+  maps = [
+<<EOT
+ map('employees',  function(e) {
+  return {
+    Country: e.Address.Country,
+    Count: 1
+  }
+}) 
+EOT
+,
+<<EOT
+map('employees', function(e) {
+  return {
+      Country: e.Address.Country,
+      Count: 1
+  }
+})
+EOT
+  ]
+
+  reduce = <<EOT
+groupBy(x => x.Country).aggregate(g => {
+  return {
+    Country: g.key,
+    Count: g.values.reduce((count, val) => val.Count + count, 0)
+  }
+ })
+EOT
+  
 }
 ```
 
@@ -116,7 +146,7 @@ resource "ravendb_server" "server" {
   }
   license = filebase64("/path/to/license.json")
   settings_override = {
-   "Indexing.MapBatchSize": 16384
+   "Indexing.MapBatchSize" = 16384
   }
   assets = {
    "/path/to/file/file_name.extension" = filebase64("/path/to/file_name.extension")
@@ -125,7 +155,47 @@ resource "ravendb_server" "server" {
     user = "ubuntu"
     pem  = filebase64("/path/to/server.pem")
   }
-}
+  
+  databases_to_delete {
+    database {
+      name        = "database_name"
+      hard_delete = false
+    }
+  }
+
+  indexes_to_delete {
+    index {
+      database_name = "database_name"
+      indexes_names = [
+        "index_name",
+        "index_name",
+      ]
+    }
+  }
+  
+  databases {
+    database {
+      name              = "database_name"
+      replication_nodes =  local.nodes 
+      encryption_key    = "base64_encryption_key"
+      settings = {
+        "Indexing.MapBatchSize" = 123
+    }
+
+    indexes {
+       index {
+          index_name = "index_name"
+          maps       = local.map
+          reduce     = local.reduce
+          configuration = {
+            "Indexing.MapBatchSize" = 128
+          }
+        }
+      }
+    }
+  }
+} 
+
 ```
 
 ### Output
@@ -143,19 +213,19 @@ output "database_name" {
 
 | Name                                                                                                                                                                                                                                                                          | Description                                                                                                                   | Type                                                                                                                                                                                                                                                                | Required |
 |-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------:|
-| hosts                                                                                                                                                                                                                                                                         | The ip addresses of the nodes that terraform will use to setup the RavenDB cluster.                                           | `list`                                                                                                                                                                                                                                                              |      yes 
+| hosts                                                                                                                                                                                                                                                                         | The ip addresses of the nodes that terraform will use to setup the RavenDB cluster.                                           | `list`                                                                                                                                                                                                                                                              |      yes |
 | database - `optional`                                                                                                                                                                                                                                                         | The database name to check whether he is alive or not. It will create the given database if it doesn't exists                 | `string`                                                                                                                                                                                                                                                            |       no |
-| cluster_setup_zip - `optional`                                                                                                                                                                                                                                                | The cluster setup zip file that is used by RavenDB for setup secured cluster.                                                 | `string`                                                                                                                                                                                                                                                            |       no 
-| license                                                                                                                                                                                                                                                                       | The license file that will be used for the setup of the RavenDB cluster.                                                      | `filebase64`                                                                                                                                                                                                                                                        |      yes 
+| cluster_setup_zip - `optional`                                                                                                                                                                                                                                                | The cluster setup zip file that is used by RavenDB for setup secured cluster.                                                 | `string`                                                                                                                                                                                                                                                            |       no |
+| license                                                                                                                                                                                                                                                                       | The license file that will be used for the setup of the RavenDB cluster.                                                      | `filebase64`                                                                                                                                                                                                                                                        |      yes |
 | package<ul><li>version</li><li>arch - `optional`</li>                                                                                                                                                                                                                         | Object that represents the version and the OS RavenDB will be running on. Supported architectures are: amd64, arm64 and arm32 | `set`<ul><li>`string`</li><li>`string`</li>                                                                                                                                                                                                                         |      yes |
-| unsecured                                                                                                                                                                                                                                                                     | Whatever to allow to run RavenDB in unsecured mode. This is ***
-NOT*** recommended!                                                                                                                                                                                                                                                           | `bool`                                                                                                                        | no                                                                                                                                                                                                                                                                  |
+| unsecured                                                                                                                                                                                                                                                                     | Whatever to allow to run RavenDB in unsecured mode. This is ***                                                               |                                                                                                                                                                                                                                                                     |          |
+| NOT*** recommended!                                                                                                                                                                                                                                                           | `bool`                                                                                                                        | no                                                                                                                                                                                                                                                                  |          |
 | settings_override                                                                                                                                                                                                                                                             | Overriding the settings.json.                                                                                                 | `map[string][string]`                                                                                                                                                                                                                                               |       no |
 | assets                                                                                                                                                                                                                                                                        | Upload files to an absolute path.                                                                                             | `map[string][string]`                                                                                                                                                                                                                                               |       no |
 | url<ul><li>list</li><li>http_url - `optional`</li><li>tcp_url - `optional`</li></ul>                                                                                                                                                                                          | Object that represents the nodes.                                                                                             | `set`<ul><li>`List(string)`</li><li>`int`</li> </li><li>`int`</li>                                                                                                                                                                                                  |      yes |
 | databases - `optional`<ul><li>database<ul> <ul> <li>name</li> <li>replication_nodes</li> <li>encryption_key</li> <li>settings</li> <li>indexes</li> <ul><li>index</li><ul> <li>index_name</li> <li>maps</li> <li>reduce</li> <li>configuration</li> </ul></ul></ul></ul></ul> | Object that represents creation of databases and indexes.                                                                     | `set`<ul><li>`set` <ul></li><li>`string`</li></li><li>`list(string)`</li> <li>`string`</li><li>`map(string)`</li><ul> <li>`set`</li><ul><li>`set`</li> <ul><li>`string`</li><li>`list(string)`</li><li>`string`</li><li>`map(string)`</li></ul></ul></ul></ul></ul> |       no |
-| databases_to_delete - `optional`<ul><li>database<ul> <ul> <li>name</li> <li>hard_delete</li>                                                                                                                                                                                  | Databases that will be hard/soft deleted.| `set`<ul><li>`set` <ul></li><li>`string`</li></li><li>`bool`</li></ul></ul>                                                                                                                                                                                         |       no |
-| indexes_to_delete - `optional`<ul><li>index<ul> <ul> <li>name</li> <li>indexes_names</li>                                                                                                                                                                                       | Indexes that will be deleted on a given database.| `set`<ul><li>`set` <ul></li><li>`string`</li></li><li>`list(string)`</li></ul></ul>                                                                                                                                                                                 |       no |
+| databases_to_delete - `optional`<ul><li>database<ul> <ul> <li>name</li> <li>hard_delete</li>                                                                                                                                                                                  | Databases that will be hard/soft deleted.                                                                                     | `set`<ul><li>`set` <ul></li><li>`string`</li></li><li>`bool`</li></ul></ul>                                                                                                                                                                                         |       no |
+| indexes_to_delete - `optional`<ul><li>index<ul> <ul> <li>name</li> <li>indexes_names</li>                                                                                                                                                                                     | Indexes that will be deleted on a given database.                                                                             | `set`<ul><li>`set` <ul></li><li>`string`</li></li><li>`list(string)`</li></ul></ul>                                                                                                                                                                                 |       no |
 
 ## Debug mode
 
