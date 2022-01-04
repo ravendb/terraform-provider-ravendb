@@ -13,6 +13,7 @@ import (
 	"github.com/ravendb/ravendb-go-client/serverwide/certificates"
 	"github.com/ravendb/ravendb-go-client/serverwide/operations"
 	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
+	"github.com/spf13/cast"
 	"golang.org/x/crypto/ssh"
 	"log"
 	"net"
@@ -132,17 +133,6 @@ func (idx *Index) convertConfiguration() map[string]string {
 	m := make(map[string]string)
 
 	for k, v := range idx.Configuration {
-		strKey := fmt.Sprintf("%v", k)
-		strValue := fmt.Sprintf("%v", v)
-		m[strKey] = strValue
-	}
-	return m
-}
-
-func (ds *Database) convertSettings() map[string]string {
-	m := make(map[string]string)
-
-	for k, v := range ds.Settings {
 		strKey := fmt.Sprintf("%v", k)
 		strValue := fmt.Sprintf("%v", v)
 		m[strKey] = strValue
@@ -364,6 +354,16 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 		}
 	}
 
+	ns.IndexesToDelete = []IndexesToDelete{}
+	if sc.IndexesToDelete != nil {
+		for _, index := range sc.IndexesToDelete {
+			ns.IndexesToDelete = append(ns.IndexesToDelete, IndexesToDelete{
+				DatabaseName: index.DatabaseName,
+				IndexesNames: index.IndexesNames,
+			})
+		}
+	}
+
 	ns.Databases = []Database{}
 	if sc.Databases != nil {
 		for _, database := range sc.Databases {
@@ -375,10 +375,6 @@ func (sc *ServerConfig) ReadServer(publicIP string, index int) (NodeState, error
 				Indexes:          database.Indexes,
 			})
 		}
-	}
-
-	if len(sc.IndexesToDelete) != 0 {
-		ns.IndexesToDelete = sc.IndexesToDelete
 	}
 
 	return ns, nil
@@ -407,7 +403,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	}
 	defer conn.Close()
 	err = sc.execute(publicIP, []string{
-		"n=0; while [ \"$n\" -lt 10 ] && [ ! -f /var/lib/cloud/instance/boot-finished ]; do echo 'Waiting for cloud-init...'; n=$(( n + 1 )); sleep 1; done",
+		"n=0; while [ \"$n\" -lt 20 ] && [ ! -f /var/lib/cloud/instance/boot-finished ]; do echo 'Waiting for cloud-init...'; n=$(( n + 1 )); sleep 1; done",
 		"wget -nv -O ravendb.deb " + ravenPackageUrl,
 		"timeout 100 bash -c -- 'while ! sudo apt-get update -y; do sleep 1; done'",
 		"sudo apt-get install -y -f ./ravendb.deb",
@@ -482,6 +478,9 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	settings["ServerUrl.Tcp"] = "tcp://0.0.0.0:" + strconv.Itoa(sc.Url.TcpPort)
 	settings["Setup.Mode"] = "None"
 	settings["License.Path"] = "/etc/ravendb/license.json"
+	settings["Security.AuditLog.RetentionTimeInHours"] = "52560"
+
+	delete(settings, "Security.AuditLog.RetentionTimeInHrs")
 
 	for key, value := range sc.Settings {
 		settings[key] = value
@@ -499,7 +498,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	err = sc.execute(publicIP, []string{
 		"sudo chown ravendb:ravendb /etc/ravendb/license.json",
 		"sudo systemctl restart ravendb",
-		"timeout 200 bash -c -- 'while ! curl -vvv -k " + httpUrl + "/setup/alive; do echo \"Curl failed with exit code $?\"; sleep 1; done'",
+		"timeout 100 bash -c -- 'while ! curl -vvv -k " + httpUrl + "/setup/alive; do echo \"Curl failed with exit code $?\"; sleep 1; done'",
 	}, "sudo systemctl status ravendb", &stdoutBuf, conn)
 	if err != nil {
 		return err
@@ -809,7 +808,7 @@ func (sc *ServerConfig) createDatabases(store *ravendb.DocumentStore) error {
 	for _, dbStruct := range sc.Databases {
 		databaseRecord := &ravendb.DatabaseRecord{
 			DatabaseName: dbStruct.Name,
-			Settings:     dbStruct.convertSettings(),
+			Settings:     dbStruct.Settings,
 			Encrypted:    true,
 			DatabaseTopology: &ravendb.DatabaseTopology{
 				Members:                  dbStruct.ReplicationNodes,
@@ -820,13 +819,18 @@ func (sc *ServerConfig) createDatabases(store *ravendb.DocumentStore) error {
 		if len(strings.TrimSpace(dbStruct.Key)) != 0 {
 			err = distributeSecretKey(store, dbStruct)
 			if err != nil {
+				log.Println("Unable to DISTRIBUTE database key to nodes: " + cast.ToString(dbStruct.ReplicationNodes) + " because " + err.Error())
 				return err
 			}
-
 			err = sc.createDatabase(store, databaseRecord, 0)
 			if err != nil && strings.Contains(err.Error(), "already exists!") {
 				err = sc.modifyDatabase(store, databaseRecord)
+				if err != nil {
+					log.Println("Unable to MODIFY database: " + databaseRecord.DatabaseName + " because: " + err.Error())
+					return err
+				}
 			} else {
+				log.Println("Unable to CREATE database: " + databaseRecord.DatabaseName + " because " + err.Error())
 				return err
 			}
 		} else {
@@ -1079,7 +1083,7 @@ func (sc *ServerConfig) modifyDatabase(store *ravendb.DocumentStore, dbRecord *r
 		if rmDbInTags != nil {
 			operation := ravendb.NewDeleteDatabasesOperationWithParameters(&ravendb.DeleteDatabaseParameters{
 				DatabaseNames:             []string{dbRecord.DatabaseName},
-				HardDelete:                true,
+				HardDelete:                false,
 				FromNodes:                 rmDbInTags,
 				TimeToWaitForConfirmation: nil,
 			})
@@ -1099,15 +1103,17 @@ func (sc *ServerConfig) modifyDatabase(store *ravendb.DocumentStore, dbRecord *r
 }
 
 func (sc *ServerConfig) createIndexes(store *ravendb.DocumentStore) error {
+	indexDefinition := ravendb.NewIndexDefinition()
 	for _, database := range sc.Databases {
 		for _, idx := range database.Indexes {
-			indexName := idx.IndexName
-			index := ravendb.NewIndexCreationTask(indexName)
+			indexDefinition.Name = idx.IndexName
 			for _, m := range idx.Maps {
-				index.Maps = append(index.Maps, m)
+				indexDefinition.Maps = append(indexDefinition.Maps, m)
 			}
-			index.Reduce = idx.Reduce
-			err := index.Execute(store, store.GetConventions(), database.Name)
+			indexDefinition.Reduce = &idx.Reduce
+			indexDefinition.Configuration = idx.Configuration
+			op := ravendb.NewPutIndexesOperation(indexDefinition)
+			err := store.Maintenance().ForDatabase(database.Name).Send(op)
 			if err != nil {
 				return err
 			}
@@ -1141,7 +1147,7 @@ func (sc *ServerConfig) deleteIndexes(store *ravendb.DocumentStore) error {
 
 func (sc *ServerConfig) addDatabaseNode(store *ravendb.DocumentStore, databaseName string, nodes []string) error {
 	for _, node := range nodes {
-		operation := internal_operations.OperationAddDatabaseNode{
+		operation := operations.OperationAddDatabaseNode{
 			Name: databaseName,
 			Node: node,
 		}

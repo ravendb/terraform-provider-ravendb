@@ -663,7 +663,7 @@ func parseData(d *schema.ResourceData) (ServerConfig, error) {
 		}
 	}
 
-	if d.HasChange("databases") {
+	if d.HasChange("indexes_to_delete") {
 		indexesToDeleteList := d.Get("indexes_to_delete").(*schema.Set).List()
 		sc.IndexesToDelete, err = parseIndexesToDelete(indexesToDeleteList)
 		if err != nil {
@@ -750,7 +750,6 @@ func (sc *ServerConfig) parseDatabases(databasesList []interface{}) ([]Database,
 			if sc.Unsecured == true {
 			}
 			databaseSettings := cast.ToStringMapString(val["settings"])
-
 			replicationNodes := cast.ToStringSlice(val["replication_nodes"])
 			if len(replicationNodes) == 0 {
 				replicationNodes[0] = "A"

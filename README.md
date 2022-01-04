@@ -179,7 +179,7 @@ resource "ravendb_server" "server" {
       replication_nodes =  local.nodes 
       encryption_key    = "base64_encryption_key"
       settings = {
-        "Indexing.MapBatchSize" = 123
+        "Subscriptions.MaxNumberOfConcurrentConnections" = 2000
     }
 
     indexes {
