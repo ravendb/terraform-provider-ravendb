@@ -30,7 +30,7 @@ terraform {
   required_providers {
     ravendb = {
       source  = "ravendb/ravendb"
-      version = "1.0.1"
+      version = ">1.0.0"
     }
   }
 }
