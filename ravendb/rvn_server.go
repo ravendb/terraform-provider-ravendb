@@ -38,6 +38,14 @@ const (
 	ADMIN_CERTIFICATE                       string = "Admin Certificate"
 )
 
+type params struct {
+	Memory      uint32
+	Iterations  uint32
+	Parallelism uint8
+	SaltLength  uint32
+	KeyLength   uint32
+}
+
 type ServerConfig struct {
 	Package             Package                       `json:"Package"`
 	Hosts               []string                      `json:"Hosts,omitempty"`
@@ -1083,7 +1091,7 @@ func (sc *ServerConfig) modifyDatabase(store *ravendb.DocumentStore, dbRecord *r
 		if rmDbInTags != nil {
 			operation := ravendb.NewDeleteDatabasesOperationWithParameters(&ravendb.DeleteDatabaseParameters{
 				DatabaseNames:             []string{dbRecord.DatabaseName},
-				HardDelete:                false,
+				HardDelete:                true,
 				FromNodes:                 rmDbInTags,
 				TimeToWaitForConfirmation: nil,
 			})

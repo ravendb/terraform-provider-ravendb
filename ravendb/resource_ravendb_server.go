@@ -3,8 +3,9 @@ package ravendb
 import (
 	"archive/zip"
 	"context"
-	"crypto/sha256"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/spf13/cast"
+	"golang.org/x/crypto/argon2"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -747,12 +750,10 @@ func (sc *ServerConfig) parseDatabases(databasesList []interface{}) ([]Database,
 			if len(strings.TrimSpace(key)) != 0 && sc.Unsecured == true {
 				return nil, errors.New("encryption key can be used only in secured mode. ")
 			}
-			if sc.Unsecured == true {
-			}
 			databaseSettings := cast.ToStringMapString(val["settings"])
 			replicationNodes := cast.ToStringSlice(val["replication_nodes"])
-			if len(replicationNodes) == 0 {
-				replicationNodes[0] = "A"
+			if replicationNodes == nil {
+				replicationNodes = append(replicationNodes, "A")
 			}
 
 			database := Database{
@@ -920,7 +921,7 @@ func flattenDatabases(databases []Database) []map[string]interface{} {
 					"name":              db.Name,
 					"settings":          db.Settings,
 					"replication_nodes": db.ReplicationNodes,
-					"encryption_key":    generateHash256(db.Key),
+					"encryption_key":    encryptionKeyHash(db.Key),
 					"indexes":           flattenIndexes(db.Indexes),
 				},
 			},
@@ -930,11 +931,40 @@ func flattenDatabases(databases []Database) []map[string]interface{} {
 	return tfs
 }
 
-func generateHash256(encryptionKey string) string {
-	//FIPS 180-4 - https://csrc.nist.gov/publications/detail/fips/180/4/final
-	h := sha256.New()
-	h.Write([]byte(encryptionKey))
-	return fmt.Sprintf("%x", h.Sum(nil))
+func encryptionKeyHash(plainText string) string {
+	argonParams := &params{
+		Memory:      64 * 1024,
+		Iterations:  4,
+		Parallelism: 4,
+		SaltLength:  16,
+		KeyLength:   32,
+	}
+	hash, err := generateFromPlainText(plainText, argonParams)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return hex.EncodeToString(hash)
+}
+
+func generateFromPlainText(plainText string, p *params) (hash []byte, err error) {
+	salt, err := generateRandomBytes(p.SaltLength)
+	if err != nil {
+		return nil, err
+	}
+	hash = argon2.IDKey([]byte(plainText), salt, p.Iterations, p.Memory, p.Parallelism, p.KeyLength)
+
+	return hash, nil
+}
+
+func generateRandomBytes(n uint32) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := rand.Read(b)
+	if err != nil {
+		return nil, err
+	}
+
+	return b, nil
 }
 
 func flattenIndexes(indexes []Index) []map[string]interface{} {
