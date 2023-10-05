@@ -7,14 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/ravendb/ravendb-go-client"
-	"github.com/ravendb/ravendb-go-client/serverwide/certificates"
-	"github.com/ravendb/ravendb-go-client/serverwide/operations"
-	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
-	"github.com/spf13/cast"
-	"golang.org/x/crypto/ssh"
 	"log"
 	"net"
 	"net/url"
@@ -25,6 +17,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/ravendb/ravendb-go-client"
+	"github.com/ravendb/ravendb-go-client/serverwide/certificates"
+	"github.com/ravendb/ravendb-go-client/serverwide/operations"
+	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
+	"github.com/spf13/cast"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -109,8 +110,9 @@ type Index struct {
 }
 
 type Package struct {
-	Version string `json:"Version,omitempty"`
-	Arch    string `json:"Arch,omitempty"`
+	Version       string `json:"Version,omitempty"`
+	Arch          string `json:"Arch,omitempty"`
+	UbuntuVersion string `json:"UbuntuVersion,omitempty"`
 }
 
 type Url struct {
