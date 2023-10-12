@@ -395,7 +395,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	defer func() {
 		log.Println(stdoutBuf.String())
 	}()
-	ravenPackageUrl := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + sc.Package.Version + sc.Package.Arch
+	ravenPackageUrl := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + sc.Package.Version + "-0_ubuntu." + sc.Package.UbuntuVersion + "_" + sc.Package.Arch + ".deb"
 
 	signer, err := ssh.ParsePrivateKey(sc.SSH.Pem)
 	if err != nil {
@@ -479,7 +479,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		settings["Security.UnsecuredAccessAllowed"] = "PublicNetwork"
 		scheme = "http"
 	}
-	httpUrl, err := sc.setupUrls(index, scheme, settings)
+	err = sc.setupUrls(index, scheme, settings)
 	if err != nil {
 		return err
 	}
@@ -508,7 +508,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	err = sc.execute(publicIP, []string{
 		"sudo chown ravendb:ravendb /etc/ravendb/license.json",
 		"sudo systemctl restart ravendb",
-		"timeout 100 bash -c -- 'while ! curl -vvv -k " + httpUrl + "/setup/alive; do echo \"Curl failed with exit code $?\"; sleep 1; done'",
+		"timeout 100 bash -c -- 'while ! curl -vvv -k " + scheme + "://0.0.0.0:" + strconv.Itoa(sc.Url.HttpPort) + "/setup/alive; do echo \"Curl failed with exit code $?\"; sleep 1; done'",
 	}, "sudo systemctl status ravendb", &stdoutBuf, conn)
 	if err != nil {
 		return err
@@ -622,14 +622,14 @@ func (sc *ServerConfig) ConnectToRemoteWithRetry(publicIP string, conn *ssh.Clie
 	return conn, nil
 }
 
-func (sc *ServerConfig) setupUrls(index int, scheme string, settings map[string]interface{}) (string, error) {
+func (sc *ServerConfig) setupUrls(index int, scheme string, settings map[string]interface{}) error {
 	httpUrl, tcpUrl, err := sc.GetUrlByIndex(index, scheme)
 	if err != nil {
-		return "", err
+		return err
 	}
 	settings["PublicServerUrl"] = httpUrl
 	settings["PublicServerUrl.Tcp"] = tcpUrl
-	return httpUrl, nil
+	return nil
 }
 
 func (sc *ServerConfig) GetUrlByIndex(index int, scheme string) (string, string, error) {
