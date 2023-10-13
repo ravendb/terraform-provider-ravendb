@@ -571,10 +571,14 @@ func (sc *ServerConfig) extractServerKeyAndCertForStore(publicIP string, conn *s
 	var pfx = "/etc/ravendb/cluster.server.certificate.pfx"
 	var key = "/etc/ravendb/cluster.server.certificate.key"
 	var crt = "/etc/ravendb/cluster.server.certificate.crt"
+	var legacy = ""
+	if sc.Package.UbuntuVersion >= "22.04" {
+		legacy = "-legacy"
+	}
 
 	err := sc.execute(publicIP, []string{
-		"sudo openssl pkcs12 -in " + pfx + " -nocerts -nodes -out " + key + " -password pass:",
-		"sudo openssl pkcs12 -in " + pfx + " -clcerts -nokeys -out " + crt + " -password pass:",
+		"sudo openssl pkcs12 -in " + pfx + " -nocerts -nodes -out " + key + " -password pass: " + legacy,
+		"sudo openssl pkcs12 -in " + pfx + " -clcerts -nokeys -out " + crt + " -password pass: " + legacy,
 	}, "", &stdoutBuf, conn)
 	if err != nil {
 		return CertificateHolder{}, err
