@@ -7,14 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/ravendb/ravendb-go-client"
-	"github.com/ravendb/ravendb-go-client/serverwide/certificates"
-	"github.com/ravendb/ravendb-go-client/serverwide/operations"
-	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
-	"github.com/spf13/cast"
-	"golang.org/x/crypto/ssh"
 	"log"
 	"net"
 	"net/url"
@@ -25,6 +17,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/ravendb/ravendb-go-client"
+	"github.com/ravendb/ravendb-go-client/serverwide/certificates"
+	"github.com/ravendb/ravendb-go-client/serverwide/operations"
+	internal_operations "github.com/ravendb/terraform-provider-ravendb/operations"
+	"github.com/spf13/cast"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -109,8 +110,9 @@ type Index struct {
 }
 
 type Package struct {
-	Version string `json:"Version,omitempty"`
-	Arch    string `json:"Arch,omitempty"`
+	Version       string `json:"Version,omitempty"`
+	Arch          string `json:"Arch,omitempty"`
+	UbuntuVersion string `json:"UbuntuVersion,omitempty"`
 }
 
 type Url struct {
@@ -393,7 +395,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	defer func() {
 		log.Println(stdoutBuf.String())
 	}()
-	ravenPackageUrl := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + sc.Package.Version + sc.Package.Arch
+	ravenPackageUrl := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + sc.Package.Version + "-0_ubuntu." + sc.Package.UbuntuVersion + "_" + sc.Package.Arch + ".deb"
 
 	signer, err := ssh.ParsePrivateKey(sc.SSH.Pem)
 	if err != nil {
@@ -477,7 +479,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 		settings["Security.UnsecuredAccessAllowed"] = "PublicNetwork"
 		scheme = "http"
 	}
-	httpUrl, err := sc.setupUrls(index, scheme, settings)
+	err = sc.setupUrls(index, scheme, settings)
 	if err != nil {
 		return err
 	}
@@ -506,7 +508,7 @@ func (sc *ServerConfig) deployServer(publicIP string, index int) (err error) {
 	err = sc.execute(publicIP, []string{
 		"sudo chown ravendb:ravendb /etc/ravendb/license.json",
 		"sudo systemctl restart ravendb",
-		"timeout 100 bash -c -- 'while ! curl -vvv -k " + httpUrl + "/setup/alive; do echo \"Curl failed with exit code $?\"; sleep 1; done'",
+		"timeout 100 bash -c -- 'while ! curl -vvv -k " + scheme + "://0.0.0.0:" + strconv.Itoa(sc.Url.HttpPort) + "/setup/alive; do echo \"Curl failed with exit code $?\"; sleep 1; done'",
 	}, "sudo systemctl status ravendb", &stdoutBuf, conn)
 	if err != nil {
 		return err
@@ -569,10 +571,14 @@ func (sc *ServerConfig) extractServerKeyAndCertForStore(publicIP string, conn *s
 	var pfx = "/etc/ravendb/cluster.server.certificate.pfx"
 	var key = "/etc/ravendb/cluster.server.certificate.key"
 	var crt = "/etc/ravendb/cluster.server.certificate.crt"
+	var legacy = ""
+	if sc.Package.UbuntuVersion >= "22.04" {
+		legacy = "-legacy"
+	}
 
 	err := sc.execute(publicIP, []string{
-		"sudo openssl pkcs12 -in " + pfx + " -nocerts -nodes -out " + key + " -password pass:",
-		"sudo openssl pkcs12 -in " + pfx + " -clcerts -nokeys -out " + crt + " -password pass:",
+		"sudo openssl pkcs12 -in " + pfx + " -nocerts -nodes -out " + key + " -password pass: " + legacy,
+		"sudo openssl pkcs12 -in " + pfx + " -clcerts -nokeys -out " + crt + " -password pass: " + legacy,
 	}, "", &stdoutBuf, conn)
 	if err != nil {
 		return CertificateHolder{}, err
@@ -620,14 +626,14 @@ func (sc *ServerConfig) ConnectToRemoteWithRetry(publicIP string, conn *ssh.Clie
 	return conn, nil
 }
 
-func (sc *ServerConfig) setupUrls(index int, scheme string, settings map[string]interface{}) (string, error) {
+func (sc *ServerConfig) setupUrls(index int, scheme string, settings map[string]interface{}) error {
 	httpUrl, tcpUrl, err := sc.GetUrlByIndex(index, scheme)
 	if err != nil {
-		return "", err
+		return err
 	}
 	settings["PublicServerUrl"] = httpUrl
 	settings["PublicServerUrl.Tcp"] = tcpUrl
-	return httpUrl, nil
+	return nil
 }
 
 func (sc *ServerConfig) GetUrlByIndex(index int, scheme string) (string, string, error) {

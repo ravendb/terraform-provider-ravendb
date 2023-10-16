@@ -9,12 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
-	"github.com/spf13/cast"
-	"golang.org/x/crypto/argon2"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -22,6 +16,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/spf13/cast"
+	"golang.org/x/crypto/argon2"
 )
 
 const (
@@ -31,9 +32,9 @@ const (
 )
 
 var packageArchitectures = map[string]string{
-	"arm64": "_linux-arm64",
-	"arm32": "-0_armhf.deb",
-	"amd64": "-0_amd64.deb",
+	"arm64": "arm64",
+	"arm32": "armhf",
+	"amd64": "amd64",
 }
 
 func resourceRavendbServer() *schema.Resource {
@@ -863,9 +864,12 @@ func validatePackage(sc *ServerConfig) error {
 		sc.Package.Arch = val
 	}
 	if len(strings.TrimSpace(sc.Package.Arch)) == 0 {
-		sc.Package.Arch = "-0_amd64.deb"
+		sc.Package.Arch = packageArchitectures["amd64"]
 	}
-	link := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + sc.Package.Version + sc.Package.Arch
+	if len(strings.TrimSpace(sc.Package.UbuntuVersion)) == 0 {
+		sc.Package.UbuntuVersion = "22.04"
+	}
+	link := "https://daily-builds.s3.us-east-1.amazonaws.com/ravendb_" + sc.Package.Version + "-0_ubuntu." + sc.Package.UbuntuVersion + "_" + sc.Package.Arch + ".deb"
 	response, err := http.Head(link)
 	if err != nil {
 		return errors.New("unable to download the RavenDB version: " + sc.Package.Version + ", from: " + link + " because of:" + "err")
