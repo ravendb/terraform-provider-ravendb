@@ -9,6 +9,7 @@ require (
 	github.com/ravendb/ravendb-go-client v0.0.0-20230607102539-0fd54650219d
 	github.com/spf13/cast v1.3.1
 	golang.org/x/crypto v0.17.0
+	github.com/go-git/go-git@5.11.0
 )
 
 require (
